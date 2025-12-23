@@ -25,7 +25,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port
 
 ```lua
 {
-  "your-username/nvim-gemini-helper",
+  "takeshy/nvim-gemini-helper",
   dependencies = {
     "nvim-lua/plenary.nvim",
   },
@@ -46,7 +46,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port
 
 ```lua
 use {
-  "your-username/nvim-gemini-helper",
+  "takeshy/nvim-gemini-helper",
   requires = { "nvim-lua/plenary.nvim" },
   config = function()
     require("gemini_helper").setup({
