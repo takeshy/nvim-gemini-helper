@@ -10,7 +10,7 @@ local json = vim.json
 M.defaults = {
   -- API settings
   google_api_key = "",
-  model = "gemini-2.5-flash",
+  model = "gemini-3-flash-preview",
 
   -- Workspace settings
   workspace = vim.fn.getcwd(),
@@ -22,10 +22,20 @@ M.defaults = {
   -- Write permissions
   allow_write = false,
 
+  -- Search settings
+  -- search_setting can be:
+  --   nil or "" = None (no search)
+  --   "__websearch__" = Web Search
+  --   other string = Semantic search store name
+  search_setting = nil,
+
   -- RAG settings (use store created by ragujuary)
   rag_enabled = false,
   rag_store_name = nil, -- e.g. "fileSearchStores/your-store-name"
   rag_only = false, -- If true, disable function calling and use only RAG
+
+  -- Slash commands
+  slash_commands = {},  -- Array of { id, name, prompt_template, model, description, search_setting }
 
   -- UI settings
   chat_width = 50,
@@ -179,6 +189,73 @@ function SettingsManager:get_rag_store_name()
     store_name = "fileSearchStores/" .. store_name
   end
   return store_name
+end
+
+---Check if Web Search is enabled
+---@param self SettingsManager
+---@return boolean
+function SettingsManager:is_web_search_enabled()
+  return self.settings.search_setting == "__websearch__"
+end
+
+---Get current search setting type
+---@param self SettingsManager
+---@return string "none"|"websearch"|"semantic"
+function SettingsManager:get_search_type()
+  local setting = self.settings.search_setting
+  if not setting or setting == "" then
+    return "none"
+  elseif setting == "__websearch__" then
+    return "websearch"
+  else
+    return "semantic"
+  end
+end
+
+---Get slash commands
+---@param self SettingsManager
+---@return table[]
+function SettingsManager:get_slash_commands()
+  return self.settings.slash_commands or {}
+end
+
+---Add a slash command
+---@param self SettingsManager
+---@param command table
+function SettingsManager:add_slash_command(command)
+  self.settings.slash_commands = self.settings.slash_commands or {}
+  -- Generate ID if not provided
+  if not command.id then
+    command.id = tostring(os.time()) .. "_" .. math.random(1000, 9999)
+  end
+  table.insert(self.settings.slash_commands, command)
+end
+
+---Remove a slash command by id
+---@param self SettingsManager
+---@param id string
+function SettingsManager:remove_slash_command(id)
+  local commands = self.settings.slash_commands or {}
+  for i, cmd in ipairs(commands) do
+    if cmd.id == id then
+      table.remove(commands, i)
+      break
+    end
+  end
+end
+
+---Find slash command by name
+---@param self SettingsManager
+---@param name string
+---@return table|nil
+function SettingsManager:find_slash_command(name)
+  local commands = self.settings.slash_commands or {}
+  for _, cmd in ipairs(commands) do
+    if cmd.name == name then
+      return cmd
+    end
+  end
+  return nil
 end
 
 return M

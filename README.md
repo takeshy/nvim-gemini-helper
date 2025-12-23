@@ -6,10 +6,12 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port
 
 - **Streaming Chat Interface**: Real-time response streaming with Gemini API
 - **Function Calling**: AI can directly execute workspace operations (9 tools)
-- **Multiple Model Support**: Gemini 2.5 Pro/Flash, 3 Pro Preview
+- **Multiple Model Support**: Gemini 3 Flash/Pro Preview, 2.5 Flash Lite
+- **Web Search**: Search the web for up-to-date information using Google Search
+- **Slash Commands**: Custom command templates with variable expansion
 - **File Attachments**: Support for images and text files
 - **Chat History**: Auto-saves conversations to Markdown files
-- **RAG (File Search)**: Semantic search using Google's File Search API with stores managed by [ragujuary](https://github.com/takeshy/ragujuary)
+- **Semantic Search (RAG)**: Semantic search using Google's File Search API with stores managed by [ragujuary](https://github.com/takeshy/ragujuary)
 - **Safe Editing**: Propose-edit workflow with apply/discard confirmation
 - **Local Search**: Filename and content-based search with relevance scoring
 
@@ -32,10 +34,10 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port
   config = function()
     require("gemini_helper").setup({
       api_key = vim.env.GOOGLE_API_KEY, -- or set via :GeminiSetApiKey
-      model = "gemini-2.5-flash",
+      model = "gemini-3-flash-preview", -- Default model
       workspace = vim.fn.getcwd(),
       allow_write = false, -- Enable to allow file modifications
-      rag_enabled = false, -- Enable for RAG features
+      rag_enabled = false, -- Enable for semantic search features
       rag_store_name = nil, -- Store name created by ragujuary (e.g. "fileSearchStores/your-store")
     })
   end,
@@ -88,6 +90,10 @@ use {
 | `:GeminiSetApiKey <key>` | Set Google API key |
 | `:GeminiToggleWrite` | Toggle write permissions for AI |
 | `:GeminiTest` | Test API connection |
+| `:GeminiWebSearch` | Enable Web Search for messages |
+| `:GeminiSearchNone` | Disable search |
+| `:GeminiSlashCommands` | Show slash command picker |
+| `:GeminiAddSlashCommand <name> <template>` | Add a slash command |
 
 ## Default Keymaps
 
@@ -97,14 +103,18 @@ use {
 | `<leader>gn` | New Gemini chat |
 | `<leader>gh` | Show chat history |
 | `<leader>gs` | Show settings |
+| `<leader>g/` | Show slash commands |
+| `<leader>gc` (visual) | Open chat with selection |
 
 ### In Chat Window
 
 | Keymap | Description |
 |--------|-------------|
 | `<Enter>` | Send message |
+| `<S-Enter>` | Insert newline |
 | `<C-c>` | Stop generation |
-| `q` or `<Esc>` | Close chat window |
+| `<C-q>` | Close (insert mode) |
+| `q` or `<Esc>` | Close (normal mode) |
 
 ## Configuration
 
@@ -112,7 +122,7 @@ use {
 require("gemini_helper").setup({
   -- API Settings
   api_key = "",  -- Google AI API key (required)
-  model = "gemini-2.5-flash",  -- Model to use
+  model = "gemini-3-flash-preview",  -- Model to use
 
   -- Workspace
   workspace = vim.fn.getcwd(),  -- Root directory for file operations
@@ -124,9 +134,15 @@ require("gemini_helper").setup({
   -- Permissions
   allow_write = false,  -- Allow AI to modify files
 
-  -- RAG (Retrieval Augmented Generation via ragujuary)
+  -- Search Settings
+  search_setting = nil,  -- nil=None, "__websearch__"=Web Search, or store name for semantic search
+
+  -- Semantic Search (RAG via ragujuary)
   rag_enabled = false,
   rag_store_name = nil, -- e.g. "fileSearchStores/your-store"
+
+  -- Slash Commands
+  slash_commands = {},  -- Custom command templates
 
   -- UI
   chat_width = 80,
@@ -159,12 +175,75 @@ The AI can use these tools to interact with your workspace:
 | `create_folder` | Create a new folder |
 | `rename_note` | Rename/move a file |
 | `update_note` | Update a note's content |
+| `write_to_buffer` | Write directly to current buffer (works with unsaved buffers) |
 
-## RAG (Retrieval Augmented Generation)
+## Web Search
 
-RAG allows the AI to semantically search your files for relevant context using Google's File Search API.
+Enable Web Search to let the AI search the internet for up-to-date information.
 
-### Setup RAG
+```vim
+:GeminiWebSearch
+```
+
+When enabled, the AI will use Google Search to find relevant information before responding. Note that Web Search cannot be used together with function calling tools or semantic search.
+
+## Slash Commands
+
+Create custom command templates that can be quickly invoked with `/commandname`.
+
+### Adding Slash Commands
+
+Via command:
+```vim
+:GeminiAddSlashCommand translate Translate the following to English: {selection}
+```
+
+Via setup:
+```lua
+require("gemini_helper").setup({
+  slash_commands = {
+    {
+      name = "translate",
+      prompt_template = "Translate the following to English: {selection}",
+      description = "Translate selection to English",
+    },
+    {
+      name = "explain",
+      prompt_template = "Explain this code:\n{selection}",
+      description = "Explain selected code",
+      model = "gemini-3-pro-preview",  -- Use specific model
+    },
+    {
+      name = "search",
+      prompt_template = "Search for information about: {selection}",
+      search_setting = "__websearch__",  -- Enable Web Search
+    },
+  },
+})
+```
+
+### Available Variables
+
+| Variable | Description |
+|----------|-------------|
+| `{selection}` | Current visual selection |
+| `{file}` | Current file name |
+| `{filepath}` | Full file path |
+| `{line}` | Current line content |
+
+### Using Slash Commands
+
+1. Select text in visual mode (optional)
+2. Open chat with `<leader>gc`
+3. Type `/commandname` and press Enter
+
+Or use the picker: `<leader>g/` or `:GeminiSlashCommands`
+
+## Semantic Search (RAG)
+
+Semantic search allows the AI to find relevant context from your files using Google's File Search API.
+
+### Setup Semantic Search
 
 1. Install [ragujuary](https://github.com/takeshy/ragujuary) CLI tool
 2. Create and manage your File Search store with ragujuary:
@@ -221,9 +300,11 @@ AI response here...
 
 ## Available Models
 
-- `gemini-3-pro-preview` - Latest and most capable model
-- `gemini-2.5-flash` (default) - Fast and cost-effective
-- `gemini-2.5-pro` - More capable
+| Model | Description |
+|-------|-------------|
+| `gemini-3-flash-preview` | Latest fast model with 1M context (default, recommended) |
+| `gemini-3-pro-preview` | Latest flagship model with 1M context, best performance |
+| `gemini-2.5-flash-lite` | Lightweight flash model |
 
 ## License
 

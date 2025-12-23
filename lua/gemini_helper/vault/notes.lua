@@ -58,13 +58,19 @@ end
 
 ---Read active buffer
 ---@param self NotesManager
+---@param bufnr? number  Optional buffer number (uses current if not provided)
 ---@return table|nil, string|nil
-function NotesManager:read_active()
-  local bufnr = vim.api.nvim_get_current_buf()
+function NotesManager:read_active(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return nil, "Invalid buffer"
+  end
+
   local filepath = vim.api.nvim_buf_get_name(bufnr)
 
   if filepath == "" then
-    return nil, "No active file"
+    return nil, "No active file (buffer has no file)"
   end
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -85,13 +91,19 @@ end
 
 ---Get active buffer info
 ---@param self NotesManager
+---@param bufnr? number  Optional buffer number (uses current if not provided)
 ---@return table|nil, string|nil
-function NotesManager:get_active_info()
-  local bufnr = vim.api.nvim_get_current_buf()
+function NotesManager:get_active_info(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return nil, "Invalid buffer"
+  end
+
   local filepath = vim.api.nvim_buf_get_name(bufnr)
 
   if filepath == "" then
-    return nil, "No active file"
+    return nil, "No active file (buffer has no file)"
   end
 
   local stat = vim.loop.fs_stat(filepath)
@@ -310,6 +322,85 @@ function NotesManager:list_folders()
   end
 
   return folders
+end
+
+---Write to buffer directly
+---@param self NotesManager
+---@param bufnr number
+---@param mode string
+---@param new_text string
+---@param old_text? string
+---@return boolean, string|nil
+function NotesManager:write_to_buffer(bufnr, mode, new_text, old_text)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false, "Invalid buffer"
+  end
+
+  -- Get current content
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local original_content = table.concat(lines, "\n")
+
+  -- Calculate new content based on mode
+  local new_content
+  if mode == "replace" then
+    if not old_text then
+      return false, "old_text is required for replace mode"
+    end
+    if not original_content:find(old_text, 1, true) then
+      return false, "old_text not found in buffer"
+    end
+    new_content = original_content:gsub(vim.pesc(old_text), new_text, 1)
+  elseif mode == "append" then
+    new_content = original_content .. "\n" .. new_text
+  elseif mode == "prepend" then
+    new_content = new_text .. "\n" .. original_content
+  elseif mode == "full" then
+    new_content = new_text
+  elseif mode == "insert_at_cursor" then
+    -- Insert at cursor position in the original buffer
+    -- We need to get cursor position from the original buffer window
+    local wins = vim.fn.win_findbuf(bufnr)
+    if #wins > 0 then
+      local win = wins[1]
+      local cursor = vim.api.nvim_win_get_cursor(win)
+      local row = cursor[1] - 1  -- 0-indexed
+      local col = cursor[2]
+
+      -- Split content into lines
+      local new_lines = vim.split(new_text, "\n", { plain = true })
+
+      -- Get current line
+      local current_line = lines[row + 1] or ""
+
+      -- Insert text at cursor position
+      local before = current_line:sub(1, col)
+      local after = current_line:sub(col + 1)
+
+      if #new_lines == 1 then
+        lines[row + 1] = before .. new_lines[1] .. after
+      else
+        -- Multiple lines
+        lines[row + 1] = before .. new_lines[1]
+        for i = 2, #new_lines - 1 do
+          table.insert(lines, row + i, new_lines[i])
+        end
+        table.insert(lines, row + #new_lines, new_lines[#new_lines] .. after)
+      end
+
+      new_content = table.concat(lines, "\n")
+    else
+      -- No window found, just append
+      new_content = original_content .. "\n" .. new_text
+    end
+  else
+    return false, "Invalid mode: " .. mode
+  end
+
+  -- Apply changes to buffer
+  local new_lines = vim.split(new_content, "\n", { plain = true })
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, new_lines)
+
+  return true, nil
 end
 
 return M

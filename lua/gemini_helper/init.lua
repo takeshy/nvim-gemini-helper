@@ -23,6 +23,8 @@ local state = {
   history_manager = nil,
   chat = nil,
   current_chat_id = nil,
+  last_selection = "",  -- Cached selection for {selection} variable
+  original_bufnr = nil,  -- Buffer that was active before opening chat
 }
 
 -- Default system prompt
@@ -128,6 +130,30 @@ function M.setup(opts)
     M.test_api()
   end, { desc = "Test Gemini API connection" })
 
+  vim.api.nvim_create_user_command("GeminiSlashCommands", function()
+    M.show_slash_commands()
+  end, { desc = "Show slash commands picker" })
+
+  vim.api.nvim_create_user_command("GeminiAddSlashCommand", function(cmd_opts)
+    local args = cmd_opts.args
+    local name, template = args:match("^(%S+)%s+(.+)$")
+    if name and template then
+      M.add_slash_command({ name = name, prompt_template = template })
+    else
+      vim.notify("Usage: :GeminiAddSlashCommand <name> <template>", vim.log.levels.ERROR)
+    end
+  end, { nargs = "+", desc = "Add a slash command" })
+
+  vim.api.nvim_create_user_command("GeminiWebSearch", function()
+    state.settings:set("search_setting", "__websearch__")
+    vim.notify("Web Search enabled for next message", vim.log.levels.INFO)
+  end, { desc = "Enable Web Search for next message" })
+
+  vim.api.nvim_create_user_command("GeminiSearchNone", function()
+    state.settings:set("search_setting", nil)
+    vim.notify("Search disabled", vim.log.levels.INFO)
+  end, { desc = "Disable search" })
+
   vim.notify("Gemini Helper loaded", vim.log.levels.INFO)
 end
 
@@ -138,6 +164,11 @@ function M.register_commands()
   vim.keymap.set("n", "<leader>gn", M.new_chat, { desc = "New Gemini chat" })
   vim.keymap.set("n", "<leader>gh", M.show_history, { desc = "Gemini history" })
   vim.keymap.set("n", "<leader>gs", M.show_settings, { desc = "Gemini settings" })
+  vim.keymap.set("n", "<leader>g/", M.show_slash_commands, { desc = "Gemini slash commands" })
+  vim.keymap.set("v", "<leader>gc", function()
+    M.capture_selection()
+    M.open_chat()
+  end, { desc = "Open Gemini chat with selection" })
 end
 
 ---Open chat window
@@ -147,6 +178,17 @@ function M.open_chat()
     return
   end
 
+  -- Save the original buffer before opening chat
+  local current_buf = vim.api.nvim_get_current_buf()
+  local bufname = vim.api.nvim_buf_get_name(current_buf)
+  -- Only save if it's a real file buffer (not chat window, empty, etc.)
+  if bufname ~= "" and not bufname:match("^gemini_") then
+    state.original_bufnr = current_buf
+  end
+
+  -- Capture selection before opening chat (in case we're in visual mode)
+  M.capture_selection()
+
   -- Create chat UI if not exists
   if not state.chat or not state.chat:is_open() then
     state.chat = chat_ui.new({
@@ -155,11 +197,15 @@ function M.open_chat()
       position = state.settings:get("chat_position"),
       model_name = state.settings:get("model"),
       on_send = function(message)
-        M.handle_message(message)
+        -- Process slash command if present
+        local expanded, cmd_opts = M.process_slash_command(message)
+        M.handle_message(expanded, cmd_opts)
       end,
       on_stop = function()
-        -- TODO: Implement abort
-        vim.notify("Stopping not yet implemented", vim.log.levels.INFO)
+        if state.gemini_client then
+          state.gemini_client:abort()
+          vim.notify("Generation stopped", vim.log.levels.INFO)
+        end
       end,
     })
     state.chat:open()
@@ -195,17 +241,24 @@ end
 
 ---Handle incoming message
 ---@param message string
-function M.handle_message(message)
+---@param opts table|nil  Optional overrides for model, search_setting
+function M.handle_message(message, opts)
   if not state.gemini_client then
     vim.notify("Gemini client not initialized", vim.log.levels.ERROR)
     return
   end
 
+  opts = opts or {}
+
   state.chat:start_streaming()
 
-  -- Get enabled tools (empty if rag_only mode)
+  -- Determine search settings
+  local search_setting = opts.search_setting or state.settings:get("search_setting")
+  local web_search_enabled = search_setting == "__websearch__"
+
+  -- Get enabled tools (empty if rag_only mode or web_search mode)
   local enabled_tools = {}
-  if not state.settings:get("rag_only") then
+  if not state.settings:get("rag_only") and not web_search_enabled then
     enabled_tools = tools.get_enabled_tools({
       allow_write = state.settings:get("allow_write"),
     })
@@ -230,20 +283,36 @@ function M.handle_message(message)
     system_prompt = DEFAULT_SYSTEM_PROMPT
   end
 
-  -- Get RAG store name if configured
+  -- Get RAG store name if configured and not using web search
   local rag_store_name = nil
-  if state.settings:is_rag_configured() then
-    rag_store_name = state.settings:get_rag_store_name()
+  if not web_search_enabled then
+    if search_setting and search_setting ~= "" and search_setting ~= "__websearch__" then
+      -- Use search_setting as semantic search store name
+      rag_store_name = search_setting
+      if not rag_store_name:match("^fileSearchStores/") then
+        rag_store_name = "fileSearchStores/" .. rag_store_name
+      end
+    elseif state.settings:is_rag_configured() then
+      rag_store_name = state.settings:get_rag_store_name()
+    end
   end
 
   local tools_used = {}
   local rag_sources = {}
+  local web_search_used = false
 
-  state.gemini_client:chat_with_tools({
+  -- Use custom model if specified
+  local client = state.gemini_client
+  if opts.model and opts.model ~= state.settings:get("model") then
+    client = gemini.new(state.settings:get("google_api_key"), opts.model)
+  end
+
+  client:chat_with_tools({
     messages = messages,
     tools = enabled_tools,
     system_prompt = system_prompt,
     rag_store_name = rag_store_name,
+    web_search_enabled = web_search_enabled,
     execute_tool = function(tool_name, args)
       table.insert(tools_used, tool_name)
       state.chat:add_tool_call(tool_name, args)
@@ -259,18 +328,30 @@ function M.handle_message(message)
         elseif chunk.type == "tool_result" then
           state.chat:set_status("Tool completed: " .. chunk.name)
         elseif chunk.type == "rag_used" and chunk.sources then
-          state.chat:set_status("RAG search completed")
+          state.chat:set_status("Semantic search completed")
           for _, source in ipairs(chunk.sources) do
             table.insert(rag_sources, source)
           end
+        elseif chunk.type == "web_search_used" then
+          state.chat:set_status("Web search completed")
+          web_search_used = true
+        elseif chunk.type == "aborted" then
+          state.chat:set_status("Stopped")
         end
       end)
     end,
     on_done = function(result)
       vim.schedule(function()
+        -- Handle aborted state
+        if result.aborted then
+          state.chat:end_streaming(nil, nil, nil, true)
+          return
+        end
+
         state.chat:end_streaming(
           #tools_used > 0 and tools_used or nil,
-          #rag_sources > 0 and rag_sources or nil
+          #rag_sources > 0 and rag_sources or nil,
+          result.web_search_used or web_search_used
         )
 
         -- Save chat
@@ -332,6 +413,8 @@ end
 ---Show settings
 function M.show_settings()
   local settings = state.settings:get_all()
+  local search_type = state.settings:get_search_type()
+  local slash_commands = state.settings:get_slash_commands()
 
   local lines = {
     "Gemini Helper Settings",
@@ -341,13 +424,27 @@ function M.show_settings()
     string.format("Model: %s", settings.model),
     string.format("Workspace: %s", settings.workspace),
     string.format("Allow Write: %s", settings.allow_write and "Yes" or "No"),
-    string.format("RAG Enabled: %s", settings.rag_enabled and "Yes" or "No"),
-    string.format("RAG Store: %s", settings.rag_store_name or "Not configured"),
     "",
-    "Commands:",
-    "  :GeminiSetApiKey <key> - Set API key",
-    "  :GeminiToggleWrite - Toggle write permissions",
+    "Search Settings:",
+    string.format("  Current: %s", search_type == "websearch" and "Web Search" or (search_type == "semantic" and settings.search_setting or "None")),
+    string.format("  RAG Enabled: %s", settings.rag_enabled and "Yes" or "No"),
+    string.format("  RAG Store: %s", settings.rag_store_name or "Not configured"),
+    "",
+    string.format("Slash Commands: %d configured", #slash_commands),
   }
+
+  for _, cmd in ipairs(slash_commands) do
+    table.insert(lines, string.format("  /%s - %s", cmd.name, cmd.description or cmd.prompt_template:sub(1, 30)))
+  end
+
+  table.insert(lines, "")
+  table.insert(lines, "Commands:")
+  table.insert(lines, "  :GeminiSetApiKey <key> - Set API key")
+  table.insert(lines, "  :GeminiToggleWrite - Toggle write permissions")
+  table.insert(lines, "  :GeminiWebSearch - Enable Web Search")
+  table.insert(lines, "  :GeminiSearchNone - Disable search")
+  table.insert(lines, "  :GeminiSlashCommands - Show slash command picker")
+  table.insert(lines, "  :GeminiAddSlashCommand <name> <template> - Add command")
 
   -- Create floating window
   local buf = vim.api.nvim_create_buf(false, true)
@@ -409,6 +506,171 @@ end
 ---Get settings manager
 function M.get_settings()
   return state.settings
+end
+
+---Get original buffer number (buffer active before chat was opened)
+---@return number|nil
+function M.get_original_bufnr()
+  -- If original_bufnr is set and valid, return it
+  if state.original_bufnr and vim.api.nvim_buf_is_valid(state.original_bufnr) then
+    return state.original_bufnr
+  end
+  return nil
+end
+
+---Capture current visual selection
+---@return string
+function M.capture_selection()
+  -- Get the current visual selection
+  local mode = vim.fn.mode()
+  if mode == "v" or mode == "V" or mode == "\22" then
+    -- In visual mode, get selection
+    vim.cmd('normal! "vy')
+    local selection = vim.fn.getreg("v")
+    if selection and selection ~= "" then
+      state.last_selection = selection
+    end
+  end
+  return state.last_selection
+end
+
+---Get the last captured selection
+---@return string
+function M.get_last_selection()
+  return state.last_selection
+end
+
+---Clear the cached selection
+function M.clear_last_selection()
+  state.last_selection = ""
+end
+
+---Expand slash command template
+---@param template string
+---@return string
+function M.expand_template(template)
+  local result = template
+
+  -- Expand {selection} variable
+  result = result:gsub("{selection}", state.last_selection or "")
+
+  -- Expand {file} variable - current file name
+  local current_file = vim.fn.expand("%:t")
+  result = result:gsub("{file}", current_file or "")
+
+  -- Expand {filepath} variable - full file path
+  local file_path = vim.fn.expand("%:p")
+  result = result:gsub("{filepath}", file_path or "")
+
+  -- Expand {line} variable - current line content
+  local current_line = vim.api.nvim_get_current_line()
+  result = result:gsub("{line}", current_line or "")
+
+  return result
+end
+
+---Process slash command if message starts with /
+---@param message string
+---@return string, table|nil  (expanded message, command opts or nil)
+function M.process_slash_command(message)
+  if not message:match("^/") then
+    return message, nil
+  end
+
+  -- Extract command name
+  local cmd_name = message:match("^/(%S+)")
+  if not cmd_name then
+    return message, nil
+  end
+
+  -- Find command
+  local command = state.settings:find_slash_command(cmd_name)
+  if not command then
+    return message, nil
+  end
+
+  -- Expand template
+  local expanded = M.expand_template(command.prompt_template)
+
+  -- Build options
+  local opts = {}
+  if command.model then
+    opts.model = command.model
+  end
+  if command.search_setting then
+    opts.search_setting = command.search_setting
+  end
+
+  return expanded, opts
+end
+
+---Show slash command picker
+function M.show_slash_commands()
+  local commands = state.settings:get_slash_commands()
+
+  if #commands == 0 then
+    vim.notify("No slash commands configured. Add them in settings.", vim.log.levels.INFO)
+    return
+  end
+
+  local items = {}
+  for _, cmd in ipairs(commands) do
+    table.insert(items, {
+      name = cmd.name,
+      description = cmd.description or "",
+      command = cmd,
+    })
+  end
+
+  vim.ui.select(items, {
+    prompt = "Select slash command:",
+    format_item = function(item)
+      if item.description and item.description ~= "" then
+        return "/" .. item.name .. " - " .. item.description
+      end
+      return "/" .. item.name
+    end,
+  }, function(selected)
+    if selected then
+      -- Capture selection before processing
+      M.capture_selection()
+
+      local expanded = M.expand_template(selected.command.prompt_template)
+
+      -- If chat is open, add to input
+      if state.chat and state.chat:is_open() then
+        state.chat:set_input(expanded)
+      else
+        -- Open chat and send message
+        M.open_chat()
+        vim.schedule(function()
+          if state.chat then
+            state.chat:set_input(expanded)
+          end
+        end)
+      end
+    end
+  end)
+end
+
+---Add a new slash command
+---@param opts table { name, prompt_template, model?, description?, search_setting? }
+function M.add_slash_command(opts)
+  if not opts.name or not opts.prompt_template then
+    vim.notify("Slash command requires 'name' and 'prompt_template'", vim.log.levels.ERROR)
+    return
+  end
+
+  state.settings:add_slash_command({
+    name = opts.name,
+    prompt_template = opts.prompt_template,
+    model = opts.model,
+    description = opts.description,
+    search_setting = opts.search_setting,
+  })
+  state.settings:save()
+
+  vim.notify("Slash command /" .. opts.name .. " added", vim.log.levels.INFO)
 end
 
 ---Test API connection (non-streaming)

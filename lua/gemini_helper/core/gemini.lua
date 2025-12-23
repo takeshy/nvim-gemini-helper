@@ -10,14 +10,38 @@ local API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 -- Available models
 M.MODELS = {
+  ["gemini-3-flash-preview"] = "gemini-3-flash-preview",
   ["gemini-3-pro-preview"] = "gemini-3-pro-preview",
-  ["gemini-2.5-flash"] = "gemini-2.5-flash",
-  ["gemini-2.5-pro"] = "gemini-2.5-pro",
+  ["gemini-2.5-flash-lite"] = "gemini-2.5-flash-lite",
+}
+
+-- Default model
+M.DEFAULT_MODEL = "gemini-3-flash-preview"
+
+-- Model info for UI
+M.MODEL_INFO = {
+  {
+    name = "gemini-3-flash-preview",
+    display_name = "Gemini 3 Flash Preview",
+    description = "Latest fast model with 1M context, best cost-performance (recommended)",
+  },
+  {
+    name = "gemini-3-pro-preview",
+    display_name = "Gemini 3 Pro Preview",
+    description = "Latest flagship model with 1M context, best performance",
+  },
+  {
+    name = "gemini-2.5-flash-lite",
+    display_name = "Gemini 2.5 Flash Lite",
+    description = "Lightweight flash model",
+  },
 }
 
 ---@class GeminiClient
 ---@field api_key string
 ---@field model string
+---@field current_process table|nil  Current running process (for abort)
+---@field is_aborted boolean
 local GeminiClient = {}
 GeminiClient.__index = GeminiClient
 
@@ -28,8 +52,27 @@ GeminiClient.__index = GeminiClient
 function M.new(api_key, model)
   local self = setmetatable({}, GeminiClient)
   self.api_key = api_key
-  self.model = model or "gemini-2.5-flash"
+  self.model = model or M.DEFAULT_MODEL
+  self.current_process = nil
+  self.is_aborted = false
   return self
+end
+
+---Abort current streaming request
+---@param self GeminiClient
+function GeminiClient:abort()
+  self.is_aborted = true
+  if self.current_process then
+    self.current_process:kill(9)  -- SIGKILL
+    self.current_process = nil
+  end
+end
+
+---Check if client is currently streaming
+---@param self GeminiClient
+---@return boolean
+function GeminiClient:is_streaming()
+  return self.current_process ~= nil
 end
 
 ---Convert internal messages to Gemini Content format
@@ -107,6 +150,7 @@ function GeminiClient:chat_stream(opts)
   local on_done = opts.on_done
   local on_error = opts.on_error
   local rag_store_name = opts.rag_store_name
+  local web_search_enabled = opts.web_search_enabled
 
   local contents = M.messages_to_history(messages)
 
@@ -127,19 +171,24 @@ function GeminiClient:chat_stream(opts)
     }
   end
 
-  -- Add tools
-  if #tools > 0 then
-    body.tools = { M.tools_to_declarations(tools) }
-  end
+  -- Web Search cannot be used with function calling tools
+  if web_search_enabled then
+    body.tools = { { googleSearch = {} } }
+  else
+    -- Add tools
+    if #tools > 0 then
+      body.tools = { M.tools_to_declarations(tools) }
+    end
 
-  -- Add file_search tool if store name provided (for RAG via ragujuary)
-  if rag_store_name then
-    body.tools = body.tools or {}
-    table.insert(body.tools, {
-      file_search = {
-        file_search_store_names = { rag_store_name },
-      }
-    })
+    -- Add file_search tool if store name provided (for RAG via ragujuary)
+    if rag_store_name then
+      body.tools = body.tools or {}
+      table.insert(body.tools, {
+        file_search = {
+          file_search_store_names = { rag_store_name },
+        }
+      })
+    end
   end
 
   local url = string.format(
@@ -160,10 +209,14 @@ function GeminiClient:chat_stream(opts)
   local accumulated_text = ""
   local function_calls = {}
   local rag_sources = {}
+  local web_search_used = false
   local buffer = ""
 
+  -- Reset abort flag
+  self.is_aborted = false
+
   -- Use vim.system for async curl with streaming stdout
-  vim.system(
+  self.current_process = vim.system(
     {
       "curl", "-s", "-N", "-X", "POST", url,
       "-H", "Content-Type: application/json",
@@ -212,10 +265,21 @@ function GeminiClient:chat_stream(opts)
                     end
                   end
                   -- Check for grounding/RAG metadata
-                if candidate.groundingMetadata and candidate.groundingMetadata.groundingChunks then
-                  for _, gc in ipairs(candidate.groundingMetadata.groundingChunks) do
-                    if gc.retrievedContext and gc.retrievedContext.uri then
-                      table.insert(rag_sources, gc.retrievedContext.uri)
+                if candidate.groundingMetadata then
+                  if web_search_enabled then
+                    -- Web Search was used
+                    web_search_used = true
+                    if on_chunk then
+                      vim.schedule(function()
+                        on_chunk({ type = "web_search_used" })
+                      end)
+                    end
+                  elseif candidate.groundingMetadata.groundingChunks then
+                    -- RAG/File Search was used
+                    for _, gc in ipairs(candidate.groundingMetadata.groundingChunks) do
+                      if gc.retrievedContext and gc.retrievedContext.uri then
+                        table.insert(rag_sources, gc.retrievedContext.uri)
+                      end
                     end
                   end
                 end
@@ -236,10 +300,28 @@ function GeminiClient:chat_stream(opts)
       end,
     },
     function(result)
-      -- Clean up temp file
+      -- Clean up temp file and process reference
       os.remove(tmp_file)
+      self.current_process = nil
 
       vim.schedule(function()
+        -- Check if aborted
+        if self.is_aborted then
+          if on_chunk then
+            on_chunk({ type = "aborted" })
+          end
+          if on_done then
+            on_done({
+              text = accumulated_text,
+              function_calls = {},
+              rag_sources = {},
+              web_search_used = false,
+              aborted = true,
+            })
+          end
+          return
+        end
+
         if result.code ~= 0 then
           if on_error then
             on_error("curl failed with code " .. result.code .. ": " .. (result.stderr or ""))
@@ -264,6 +346,7 @@ function GeminiClient:chat_stream(opts)
             text = accumulated_text,
             function_calls = function_calls,
             rag_sources = rag_sources,
+            web_search_used = web_search_used,
           })
         end
       end)
@@ -283,11 +366,13 @@ function GeminiClient:chat_with_tools(opts)
   local on_done = opts.on_done
   local on_error = opts.on_error
   local rag_store_name = opts.rag_store_name
+  local web_search_enabled = opts.web_search_enabled
   local max_iterations = opts.max_iterations or 10
 
   local accumulated_text = ""
   local all_tool_calls = {}
   local all_tool_results = {}
+  local web_search_was_used = false
   local iteration = 0
 
   local function do_iteration()
@@ -304,6 +389,7 @@ function GeminiClient:chat_with_tools(opts)
       tools = tools,
       system_prompt = system_prompt,
       rag_store_name = rag_store_name,
+      web_search_enabled = web_search_enabled,
       on_chunk = on_chunk,
       on_error = on_error,
       on_tool_call = function(fc)
@@ -314,6 +400,9 @@ function GeminiClient:chat_with_tools(opts)
       end,
       on_done = function(result)
         accumulated_text = accumulated_text .. (result.text or "")
+        if result.web_search_used then
+          web_search_was_used = true
+        end
 
         -- If there are function calls, execute them and continue
         if result.function_calls and #result.function_calls > 0 then
@@ -370,6 +459,7 @@ function GeminiClient:chat_with_tools(opts)
               tool_calls = all_tool_calls,
               tool_results = all_tool_results,
               rag_sources = result.rag_sources,
+              web_search_used = web_search_was_used,
             })
           end
         end

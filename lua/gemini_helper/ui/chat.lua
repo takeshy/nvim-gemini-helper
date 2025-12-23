@@ -29,6 +29,7 @@ local function setup_highlights()
     highlight default GeminiTool guifg=#e5c07b gui=italic
     highlight default GeminiError guifg=#e06c75 gui=bold
     highlight default GeminiRAG guifg=#c678dd gui=italic
+    highlight default GeminiWebSearch guifg=#61afef gui=italic
     highlight default GeminiDivider guifg=#5c6370
     highlight default GeminiStatus guifg=#56b6c2 gui=italic
     highlight default GeminiSpinner guifg=#e5c07b gui=bold
@@ -110,7 +111,7 @@ function ChatUI:calculate_dimensions()
     row = row + height - 3,
     style = "minimal",
     border = "rounded",
-    title = " Ctrl+s: send | Ctrl+c: stop | q: close ",
+    title = " Enter: send | S-Enter: newline | C-c: stop | q: close ",
     title_pos = "center",
   }
 
@@ -146,36 +147,60 @@ function ChatUI:open()
 
   api.nvim_win_set_option(self.input_win, "wrap", true)
 
-  -- Set keymaps for input
-  local opts = { noremap = true, silent = true, buffer = self.input_buf }
+  -- Set keymaps for input buffer
+  local input_opts = { noremap = true, silent = true, buffer = self.input_buf }
 
-  -- Send with Ctrl+Enter or Ctrl+s (works better with IME)
-  vim.keymap.set({ "i", "n" }, "<C-CR>", function()
+  -- Send with Enter (both insert and normal mode)
+  vim.keymap.set({ "i", "n" }, "<CR>", function()
     self:send_message()
-  end, opts)
+  end, input_opts)
 
+  -- Shift+Enter for newline in insert mode
+  vim.keymap.set("i", "<S-CR>", function()
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "n", false)
+  end, input_opts)
+
+  -- Ctrl+s also sends (alternative)
   vim.keymap.set({ "i", "n" }, "<C-s>", function()
     self:send_message()
-  end, opts)
+  end, input_opts)
 
-  -- Normal mode Enter also sends
-  vim.keymap.set("n", "<CR>", function()
-    self:send_message()
-  end, opts)
+  -- Stop generation with Ctrl+c
+  vim.keymap.set({ "i", "n" }, "<C-c>", function()
+    if self.is_streaming and self.on_stop then
+      self.on_stop()
+    end
+  end, input_opts)
+
+  -- Close with q (normal mode) or Ctrl+q (insert mode)
+  vim.keymap.set("n", "q", function()
+    self:close()
+  end, input_opts)
+
+  vim.keymap.set("i", "<C-q>", function()
+    self:close()
+  end, input_opts)
+
+  vim.keymap.set("n", "<Esc>", function()
+    self:close()
+  end, input_opts)
+
+  -- Set keymaps for main buffer (message display)
+  local main_opts = { noremap = true, silent = true, buffer = self.main_buf }
+
+  vim.keymap.set("n", "q", function()
+    self:close()
+  end, main_opts)
+
+  vim.keymap.set("n", "<Esc>", function()
+    self:close()
+  end, main_opts)
 
   vim.keymap.set({ "i", "n" }, "<C-c>", function()
     if self.is_streaming and self.on_stop then
       self.on_stop()
     end
-  end, opts)
-
-  vim.keymap.set("n", "q", function()
-    self:close()
-  end, opts)
-
-  vim.keymap.set("n", "<Esc>", function()
-    self:close()
-  end, opts)
+  end, main_opts)
 
   -- Start in insert mode
   vim.cmd("startinsert")
@@ -302,18 +327,32 @@ end
 ---@param self ChatUI
 ---@param tools_used string[]|nil
 ---@param rag_sources string[]|nil
-function ChatUI:end_streaming(tools_used, rag_sources)
+---@param web_search_used boolean|nil
+---@param aborted boolean|nil
+function ChatUI:end_streaming(tools_used, rag_sources, web_search_used, aborted)
   self.is_streaming = false
   self.status = ""
   self:stop_spinner()
 
   if self.current_response ~= "" then
+    local content = self.current_response
+    if aborted then
+      content = content .. "\n\n*(Generation stopped)*"
+    end
     self:add_message({
       role = "assistant",
-      content = self.current_response,
+      content = content,
       timestamp = os.time() * 1000,
       tools_used = tools_used,
       rag_sources = rag_sources,
+      web_search_used = web_search_used,
+    })
+  elseif aborted then
+    -- Show stopped message even if no response yet
+    self:add_message({
+      role = "assistant",
+      content = "*(Generation stopped)*",
+      timestamp = os.time() * 1000,
     })
   end
 
@@ -360,8 +399,15 @@ function ChatUI:render()
     -- RAG sources
     if msg.rag_sources and #msg.rag_sources > 0 then
       local rag_line = #lines
-      table.insert(lines, "  [RAG: " .. table.concat(msg.rag_sources, ", ") .. "]")
+      table.insert(lines, "  [Semantic Search: " .. table.concat(msg.rag_sources, ", ") .. "]")
       table.insert(highlights, { line = rag_line, col = 0, end_col = -1, hl = "GeminiRAG" })
+    end
+
+    -- Web Search indicator
+    if msg.web_search_used then
+      local ws_line = #lines
+      table.insert(lines, "  [Web Search]")
+      table.insert(highlights, { line = ws_line, col = 0, end_col = -1, hl = "GeminiWebSearch" })
     end
 
     table.insert(lines, "")
@@ -472,6 +518,26 @@ function ChatUI:show_error(error_msg)
     content = "Error: " .. error_msg,
     timestamp = os.time() * 1000,
   })
+end
+
+---Set input text
+---@param self ChatUI
+---@param text string
+function ChatUI:set_input(text)
+  if self.input_buf and api.nvim_buf_is_valid(self.input_buf) then
+    api.nvim_buf_set_lines(self.input_buf, 0, -1, false, vim.split(text, "\n"))
+  end
+end
+
+---Get input text
+---@param self ChatUI
+---@return string
+function ChatUI:get_input()
+  if self.input_buf and api.nvim_buf_is_valid(self.input_buf) then
+    local lines = api.nvim_buf_get_lines(self.input_buf, 0, -1, false)
+    return table.concat(lines, "\n")
+  end
+  return ""
 end
 
 return M

@@ -3,6 +3,15 @@
 
 local M = {}
 
+-- Import main module to access original buffer
+local function get_original_bufnr()
+  local ok, gemini_helper = pcall(require, "gemini_helper")
+  if ok and gemini_helper.get_original_bufnr then
+    return gemini_helper.get_original_bufnr()
+  end
+  return nil
+end
+
 ---@class ToolExecutor
 ---@field notes NotesManager
 ---@field search SearchManager
@@ -54,7 +63,9 @@ end
 
 function ToolExecutor:handle_read_note(args)
   if args.active then
-    local result, err = self.notes:read_active()
+    -- Use original buffer (the one active before chat was opened)
+    local bufnr = get_original_bufnr()
+    local result, err = self.notes:read_active(bufnr)
     if err then
       return { success = false, error = err }
     end
@@ -128,7 +139,9 @@ function ToolExecutor:handle_list_folders(args)
 end
 
 function ToolExecutor:handle_get_active_note_info(args)
-  local info, err = self.notes:get_active_info()
+  -- Use original buffer (the one active before chat was opened)
+  local bufnr = get_original_bufnr()
+  local info, err = self.notes:get_active_info(bufnr)
 
   if err then
     return { success = false, error = err }
@@ -209,6 +222,37 @@ function ToolExecutor:handle_update_note(args)
   return {
     success = true,
     message = "Note updated: " .. args.name,
+  }
+end
+
+function ToolExecutor:handle_write_to_buffer(args)
+  if not args.mode or not args.new_text then
+    return { success = false, error = "mode and new_text are required" }
+  end
+
+  if args.mode == "replace" and not args.old_text then
+    return { success = false, error = "old_text is required for replace mode" }
+  end
+
+  -- Get original buffer
+  local bufnr = get_original_bufnr()
+  if not bufnr then
+    return { success = false, error = "No original buffer available. Please open a file first." }
+  end
+
+  local ok, err = self.notes:write_to_buffer(bufnr, args.mode, args.new_text, args.old_text)
+
+  if not ok then
+    return { success = false, error = err }
+  end
+
+  -- Get buffer name for message
+  local bufname = vim.api.nvim_buf_get_name(bufnr)
+  local display_name = bufname ~= "" and vim.fn.fnamemodify(bufname, ":t") or "[No Name]"
+
+  return {
+    success = true,
+    message = "Buffer updated: " .. display_name,
   }
 end
 

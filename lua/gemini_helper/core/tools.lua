@@ -188,6 +188,31 @@ M.update_note = {
   },
 }
 
+M.write_to_buffer = {
+  name = "write_to_buffer",
+  description = "Write content directly to the currently active buffer (the buffer user was editing before opening chat). Works with both saved and unsaved buffers. Modes: 'replace' replaces specified text, 'append' adds to end, 'prepend' adds to beginning, 'full' replaces entire content, 'insert_at_cursor' inserts at cursor position. User can undo with Vim's :u command.",
+  category = "write",
+  parameters = {
+    type = "object",
+    properties = {
+      mode = {
+        type = "string",
+        enum = { "replace", "append", "prepend", "full", "insert_at_cursor" },
+        description = "Edit mode",
+      },
+      old_text = {
+        type = "string",
+        description = "Text to replace (required for 'replace' mode)",
+      },
+      new_text = {
+        type = "string",
+        description = "New text to insert",
+      },
+    },
+    required = { "mode", "new_text" },
+  },
+}
+
 ---Get enabled tools based on settings
 ---@param opts table
 ---@return ToolDefinition[]
@@ -210,6 +235,7 @@ function M.get_enabled_tools(opts)
     table.insert(tools, M.create_folder)
     table.insert(tools, M.rename_note)
     table.insert(tools, M.update_note)
+    table.insert(tools, M.write_to_buffer)
   end
 
   return tools
@@ -235,6 +261,7 @@ function M.get_all_tool_names()
     "create_folder",
     "rename_note",
     "update_note",
+    "write_to_buffer",
   }
 end
 
