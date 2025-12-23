@@ -151,6 +151,7 @@ function GeminiClient:chat_stream(opts)
   local on_error = opts.on_error
   local rag_store_name = opts.rag_store_name
   local web_search_enabled = opts.web_search_enabled
+  local debug_mode = opts.debug_mode
 
   local contents = M.messages_to_history(messages)
 
@@ -173,21 +174,25 @@ function GeminiClient:chat_stream(opts)
 
   -- Web Search cannot be used with function calling tools
   if web_search_enabled then
-    body.tools = { { googleSearch = {} } }
+    body.tools = { { google_search = vim.empty_dict() } }
   else
     -- Add tools
     if #tools > 0 then
       body.tools = { M.tools_to_declarations(tools) }
     end
 
-    -- Add file_search tool if store name provided (for RAG via ragujuary)
+    -- Add file_search tool if store names provided (for RAG via ragujuary)
+    -- rag_store_name can be a string or array of strings
     if rag_store_name then
-      body.tools = body.tools or {}
-      table.insert(body.tools, {
-        file_search = {
-          file_search_store_names = { rag_store_name },
-        }
-      })
+      local store_names = type(rag_store_name) == "table" and rag_store_name or { rag_store_name }
+      if #store_names > 0 then
+        body.tools = body.tools or {}
+        table.insert(body.tools, {
+          file_search = {
+            file_search_store_names = store_names,
+          }
+        })
+      end
     end
   end
 
@@ -215,6 +220,15 @@ function GeminiClient:chat_stream(opts)
   -- Reset abort flag
   self.is_aborted = false
 
+  -- Debug: log request
+  if debug_mode then
+    vim.schedule(function()
+      print("[DEBUG] URL: " .. url:gsub(self.api_key, "***"))
+      print("[DEBUG] Web Search: " .. tostring(web_search_enabled))
+      print("[DEBUG] Request body: " .. body_json:sub(1, 500))
+    end)
+  end
+
   -- Use vim.system for async curl with streaming stdout
   self.current_process = vim.system(
     {
@@ -225,9 +239,23 @@ function GeminiClient:chat_stream(opts)
     },
     {
       text = true,
+      stderr = function(err, data)
+        if data and debug_mode then
+          vim.schedule(function()
+            print("[DEBUG] stderr: " .. data)
+          end)
+        end
+      end,
       stdout = function(err, data)
         if err then return end
         if not data then return end
+
+        if debug_mode then
+          vim.schedule(function()
+            print("[DEBUG] stdout received: " .. #data .. " bytes")
+            print("[DEBUG] raw data: " .. data:sub(1, 500))
+          end)
+        end
 
         buffer = buffer .. data
 
@@ -241,11 +269,40 @@ function GeminiClient:chat_stream(opts)
 
           if line:match("^data: ") then
             local data_str = line:sub(7)
+            if debug_mode then
+              vim.schedule(function()
+                print("[DEBUG] SSE data: " .. data_str:sub(1, 200))
+              end)
+            end
             if data_str ~= "[DONE]" then
               local ok, parsed = pcall(json.decode, data_str)
+              if not ok then
+                if debug_mode then
+                  vim.schedule(function()
+                    print("[DEBUG] JSON parse error: " .. tostring(parsed))
+                  end)
+                end
+              end
               if ok and parsed then
+                -- Check for error in response first
+                if parsed.error then
+                  if on_error then
+                    vim.schedule(function()
+                      on_error("API error: " .. (parsed.error.message or json.encode(parsed.error)))
+                    end)
+                  end
+                  return
+                end
                 if parsed.candidates and parsed.candidates[1] then
                   local candidate = parsed.candidates[1]
+                  -- Check for blocked/filtered response
+                  if candidate.finishReason and candidate.finishReason ~= "STOP" and candidate.finishReason ~= "MAX_TOKENS" then
+                    if debug_mode then
+                      vim.schedule(function()
+                        print("[DEBUG] finishReason: " .. candidate.finishReason)
+                      end)
+                    end
+                  end
                   if candidate.content and candidate.content.parts then
                     for _, part in ipairs(candidate.content.parts) do
                       if part.text then
@@ -265,33 +322,31 @@ function GeminiClient:chat_stream(opts)
                     end
                   end
                   -- Check for grounding/RAG metadata
-                if candidate.groundingMetadata then
-                  if web_search_enabled then
-                    -- Web Search was used
-                    web_search_used = true
-                    if on_chunk then
-                      vim.schedule(function()
-                        on_chunk({ type = "web_search_used" })
-                      end)
-                    end
-                  elseif candidate.groundingMetadata.groundingChunks then
-                    -- RAG/File Search was used
-                    for _, gc in ipairs(candidate.groundingMetadata.groundingChunks) do
-                      if gc.retrievedContext and gc.retrievedContext.uri then
-                        table.insert(rag_sources, gc.retrievedContext.uri)
+                  if candidate.groundingMetadata then
+                    if web_search_enabled then
+                      -- Web Search was used
+                      web_search_used = true
+                      if on_chunk then
+                        vim.schedule(function()
+                          on_chunk({ type = "web_search_used" })
+                        end)
+                      end
+                    elseif candidate.groundingMetadata.groundingChunks then
+                      -- RAG/File Search was used
+                      for _, gc in ipairs(candidate.groundingMetadata.groundingChunks) do
+                        if gc.retrievedContext and gc.retrievedContext.uri then
+                          table.insert(rag_sources, gc.retrievedContext.uri)
+                        end
                       end
                     end
                   end
-                end
-                end
-                -- Check for error in response
-                if parsed.error then
-                  if on_error then
+                else
+                  -- No candidates in response
+                  if debug_mode then
                     vim.schedule(function()
-                      on_error("API error: " .. (parsed.error.message or data_str))
+                      print("[DEBUG] No candidates in response: " .. json.encode(parsed):sub(1, 200))
                     end)
                   end
-                  return
                 end
               end
             end
@@ -305,6 +360,17 @@ function GeminiClient:chat_stream(opts)
       self.current_process = nil
 
       vim.schedule(function()
+        -- Debug: log completion
+        if debug_mode then
+          print("[DEBUG] curl completed. code=" .. tostring(result.code))
+          if result.stderr and result.stderr ~= "" then
+            print("[DEBUG] stderr: " .. result.stderr:sub(1, 200))
+          end
+          if result.stdout and result.stdout ~= "" then
+            print("[DEBUG] stdout length: " .. #result.stdout)
+          end
+        end
+
         -- Check if aborted
         if self.is_aborted then
           if on_chunk then
@@ -368,6 +434,7 @@ function GeminiClient:chat_with_tools(opts)
   local rag_store_name = opts.rag_store_name
   local web_search_enabled = opts.web_search_enabled
   local max_iterations = opts.max_iterations or 10
+  local debug_mode = opts.debug_mode
 
   local accumulated_text = ""
   local all_tool_calls = {}
@@ -390,6 +457,7 @@ function GeminiClient:chat_with_tools(opts)
       system_prompt = system_prompt,
       rag_store_name = rag_store_name,
       web_search_enabled = web_search_enabled,
+      debug_mode = debug_mode,
       on_chunk = on_chunk,
       on_error = on_error,
       on_tool_call = function(fc)

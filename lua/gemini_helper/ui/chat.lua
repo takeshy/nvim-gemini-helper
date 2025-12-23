@@ -10,6 +10,8 @@ local api = vim.api
 ---@field main_win number
 ---@field input_buf number
 ---@field input_win number
+---@field settings_buf number
+---@field settings_win number
 ---@field messages table[]
 ---@field on_send function
 ---@field on_stop function
@@ -18,6 +20,7 @@ local api = vim.api
 ---@field status string
 ---@field tool_calls table[]
 ---@field model_name string
+---@field pending_settings table
 local ChatUI = {}
 ChatUI.__index = ChatUI
 
@@ -49,6 +52,12 @@ function M.new(opts)
   self.messages = {}
   self.on_send = opts.on_send
   self.on_stop = opts.on_stop
+  self.on_get_bang_commands = opts.on_get_bang_commands  -- Callback to get bang commands
+  self.on_get_files = opts.on_get_files  -- Callback to get file list
+  self.on_get_default_settings = opts.on_get_default_settings  -- Callback to get default settings
+  self.on_get_original_win = opts.on_get_original_win  -- Callback to get original window
+  self.available_models = opts.available_models or {}  -- Available model options
+  self.pending_settings = nil  -- Temporary settings override { model?, search_setting? }
   self.is_streaming = false
   self.current_response = ""
   self.status = ""
@@ -58,12 +67,13 @@ function M.new(opts)
   self.position = opts.position or "right" -- "right", "bottom", "center"
   self.spinner_timer = nil
   self.model_name = opts.model_name or "Gemini"
+  self.input_height = 2  -- Default input height
   return self
 end
 
 ---Calculate window dimensions
 ---@param self ChatUI
----@return table, table
+---@return table, table, table
 function ChatUI:calculate_dimensions()
   local editor_width = vim.o.columns
   local editor_height = vim.o.lines
@@ -91,10 +101,13 @@ function ChatUI:calculate_dimensions()
     row = 0
   end
 
+  local input_height = self.input_height or 2  -- Default 2 lines, can grow
+  local settings_height = 1  -- Settings bar is 1 line
+
   local main_config = {
     relative = "editor",
     width = width,
-    height = height - 4, -- Leave room for input
+    height = height - input_height - settings_height - 3, -- Leave room for input + settings
     col = col,
     row = row,
     style = "minimal",
@@ -106,16 +119,75 @@ function ChatUI:calculate_dimensions()
   local input_config = {
     relative = "editor",
     width = width,
-    height = 1,
+    height = input_height,
     col = col,
-    row = row + height - 3,
+    row = row + height - input_height - settings_height - 2,
     style = "minimal",
     border = "rounded",
-    title = " Enter: send | S-Enter: newline | C-c: stop | q: close ",
+    title = " Enter: send | S-Enter: newline | ?: settings | q: close ",
     title_pos = "center",
   }
 
-  return main_config, input_config
+  local settings_config = {
+    relative = "editor",
+    width = width,
+    height = settings_height,
+    col = col,
+    row = row + height - settings_height - 1,
+    style = "minimal",
+    border = "rounded",
+    focusable = false,
+  }
+
+  return main_config, input_config, settings_config
+end
+
+---Resize input window based on content
+---@param self ChatUI
+function ChatUI:resize_input()
+  if not self.input_buf or not api.nvim_buf_is_valid(self.input_buf) then
+    return
+  end
+
+  local line_count = api.nvim_buf_line_count(self.input_buf)
+  local new_height = math.max(2, math.min(line_count, 10))  -- Min 2, max 10
+
+  if new_height ~= self.input_height then
+    self.input_height = new_height
+
+    -- Recalculate and resize windows
+    local main_config, input_config, settings_config = self:calculate_dimensions()
+
+    if self.main_win and api.nvim_win_is_valid(self.main_win) then
+      api.nvim_win_set_config(self.main_win, {
+        relative = "editor",
+        width = main_config.width,
+        height = main_config.height,
+        row = main_config.row,
+        col = main_config.col,
+      })
+    end
+
+    if self.input_win and api.nvim_win_is_valid(self.input_win) then
+      api.nvim_win_set_config(self.input_win, {
+        relative = "editor",
+        width = input_config.width,
+        height = input_config.height,
+        row = input_config.row,
+        col = input_config.col,
+      })
+    end
+
+    if self.settings_win and api.nvim_win_is_valid(self.settings_win) then
+      api.nvim_win_set_config(self.settings_win, {
+        relative = "editor",
+        width = settings_config.width,
+        height = settings_config.height,
+        row = settings_config.row,
+        col = settings_config.col,
+      })
+    end
+  end
 end
 
 ---Open the chat window
@@ -123,7 +195,7 @@ end
 function ChatUI:open()
   setup_highlights()
 
-  local main_config, input_config = self:calculate_dimensions()
+  local main_config, input_config, settings_config = self:calculate_dimensions()
 
   -- Create main buffer
   self.main_buf = api.nvim_create_buf(false, true)
@@ -136,9 +208,15 @@ function ChatUI:open()
   api.nvim_buf_set_option(self.input_buf, "buftype", "nofile")
   api.nvim_buf_set_option(self.input_buf, "bufhidden", "wipe")
 
+  -- Create settings buffer
+  self.settings_buf = api.nvim_create_buf(false, true)
+  api.nvim_buf_set_option(self.settings_buf, "buftype", "nofile")
+  api.nvim_buf_set_option(self.settings_buf, "bufhidden", "wipe")
+
   -- Open windows
   self.main_win = api.nvim_open_win(self.main_buf, false, main_config)
   self.input_win = api.nvim_open_win(self.input_buf, true, input_config)
+  self.settings_win = api.nvim_open_win(self.settings_buf, false, settings_config)
 
   -- Set window options
   api.nvim_win_set_option(self.main_win, "wrap", true)
@@ -147,13 +225,93 @@ function ChatUI:open()
 
   api.nvim_win_set_option(self.input_win, "wrap", true)
 
+  -- Render initial settings bar
+  self:render_settings_bar()
+
   -- Set keymaps for input buffer
   local input_opts = { noremap = true, silent = true, buffer = self.input_buf }
 
   -- Send with Enter (both insert and normal mode)
-  vim.keymap.set({ "i", "n" }, "<CR>", function()
+  -- But if popup menu is visible, use Enter to select completion
+  -- Also handle partial command completion
+  vim.keymap.set("i", "<CR>", function()
+    if vim.fn.pumvisible() == 1 then
+      -- Check if an item is already selected
+      local info = vim.fn.complete_info()
+      local selected = info.selected or -1
+      vim.schedule(function()
+        self:replace_command_with_template()
+      end)
+      if selected >= 0 then
+        -- Item already selected (e.g., after Tab), just confirm
+        return vim.api.nvim_replace_termcodes("<C-y>", true, false, true)
+      else
+        -- No item selected, select first and confirm
+        return vim.api.nvim_replace_termcodes("<C-n><C-y>", true, false, true)
+      end
+    end
+
+    -- Check if we're typing a command on line 1
+    local cursor = api.nvim_win_get_cursor(0)
+    local row = cursor[1]
+    local line = api.nvim_get_current_line()
+
+    if row == 1 and line:match("^!%S+$") and self.on_get_bang_commands then
+      local cmd_name = line:match("^!(%S+)$")
+      local commands = self.on_get_bang_commands()
+      -- Find exact match or single partial match
+      local exact_match = nil
+      local partial_matches = {}
+      for _, cmd in ipairs(commands) do
+        if cmd.name == cmd_name then
+          exact_match = cmd
+          break
+        elseif cmd.name:find("^" .. vim.pesc(cmd_name)) then
+          table.insert(partial_matches, cmd)
+        end
+      end
+
+      local matched_cmd = exact_match or (#partial_matches == 1 and partial_matches[1] or nil)
+      if matched_cmd then
+        -- Apply command settings and replace with template (deferred)
+        vim.schedule(function()
+          local template = matched_cmd.prompt_template or ""
+          api.nvim_buf_set_lines(self.input_buf, 0, 1, false, {template})
+          api.nvim_win_set_cursor(0, { 1, #template })
+          self:apply_command_settings(matched_cmd)
+        end)
+        return ""
+      end
+    end
+
+    -- Send message (deferred)
+    vim.schedule(function()
+      self:send_message()
+    end)
+    return ""
+  end, { noremap = true, silent = true, buffer = self.input_buf, expr = true })
+
+  vim.keymap.set("n", "<CR>", function()
     self:send_message()
   end, input_opts)
+
+  -- Tab to select next completion item
+  vim.keymap.set("i", "<Tab>", function()
+    if vim.fn.pumvisible() == 1 then
+      return vim.api.nvim_replace_termcodes("<C-n>", true, false, true)
+    else
+      return vim.api.nvim_replace_termcodes("<Tab>", true, false, true)
+    end
+  end, { noremap = true, silent = true, buffer = self.input_buf, expr = true })
+
+  -- Shift+Tab to select previous completion item
+  vim.keymap.set("i", "<S-Tab>", function()
+    if vim.fn.pumvisible() == 1 then
+      return vim.api.nvim_replace_termcodes("<C-p>", true, false, true)
+    else
+      return vim.api.nvim_replace_termcodes("<S-Tab>", true, false, true)
+    end
+  end, { noremap = true, silent = true, buffer = self.input_buf, expr = true })
 
   -- Shift+Enter for newline in insert mode
   vim.keymap.set("i", "<S-CR>", function()
@@ -185,6 +343,16 @@ function ChatUI:open()
     self:close()
   end, input_opts)
 
+  -- Toggle focus between chat input and original buffer with Ctrl+\
+  vim.keymap.set({ "i", "n" }, "<C-\\>", function()
+    if self.on_get_original_win then
+      local orig_win = self.on_get_original_win()
+      if orig_win and api.nvim_win_is_valid(orig_win) then
+        api.nvim_set_current_win(orig_win)
+      end
+    end
+  end, input_opts)
+
   -- Set keymaps for main buffer (message display)
   local main_opts = { noremap = true, silent = true, buffer = self.main_buf }
 
@@ -202,6 +370,83 @@ function ChatUI:open()
     end
   end, main_opts)
 
+  -- Disable other completion plugins for this buffer
+  vim.api.nvim_buf_set_option(self.input_buf, "omnifunc", "")
+  vim.api.nvim_buf_set_option(self.input_buf, "completefunc", "")
+
+  -- Command completion with ! (insert ! and show completions)
+  vim.keymap.set("i", "!", function()
+    local cursor = api.nvim_win_get_cursor(0)
+    local row = cursor[1]
+    local col = cursor[2]
+    local line = api.nvim_get_current_line()
+    local before_cursor = line:sub(1, col)
+
+    -- Only show completion if ! is at the beginning of line 1
+    if row == 1 and before_cursor == "" and self.on_get_bang_commands then
+      local commands = self.on_get_bang_commands()
+      if commands and #commands == 1 then
+        -- Single command: replace with prompt_template and apply settings
+        local cmd = commands[1]
+        local template = cmd.prompt_template or ""
+        -- Apply command settings to pending_settings
+        self:apply_command_settings(cmd)
+        -- Set first line to template
+        api.nvim_buf_set_lines(self.input_buf, 0, 1, false, {template})
+        -- Move cursor to end of first line
+        api.nvim_win_set_cursor(0, { 1, #template })
+        return
+      elseif commands and #commands > 1 then
+        -- Multiple commands: insert ! and show completion
+        api.nvim_buf_set_lines(self.input_buf, 0, 1, false, {"!"})
+        api.nvim_win_set_cursor(0, { 1, 1 })
+        vim.schedule(function()
+          self:show_bang_completions()
+        end)
+        return
+      end
+    end
+
+    -- Default: just insert !
+    vim.api.nvim_feedkeys("!", "n", false)
+  end, input_opts)
+
+  -- Settings modal with ? (at beginning of line 1)
+  vim.keymap.set("i", "?", function()
+    local cursor = api.nvim_win_get_cursor(0)
+    local row = cursor[1]
+    local col = cursor[2]
+    local line = api.nvim_get_current_line()
+    local before_cursor = line:sub(1, col)
+
+    -- Only show settings if ? is at the beginning of line 1
+    if row == 1 and before_cursor == "" then
+      self:show_settings_modal()
+      return
+    end
+
+    -- Default: just insert ?
+    vim.api.nvim_feedkeys("?", "n", false)
+  end, input_opts)
+
+  -- File path completion with @
+  vim.keymap.set("i", "@", function()
+    -- Insert the @
+    api.nvim_feedkeys("@", "n", false)
+
+    vim.schedule(function()
+      self:show_file_completions()
+    end)
+  end, input_opts)
+
+  -- Auto-resize input when content changes
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    buffer = self.input_buf,
+    callback = function()
+      self:resize_input()
+    end,
+  })
+
   -- Start in insert mode
   vim.cmd("startinsert")
 
@@ -218,8 +463,13 @@ function ChatUI:close()
   if self.input_win and api.nvim_win_is_valid(self.input_win) then
     api.nvim_win_close(self.input_win, true)
   end
+  if self.settings_win and api.nvim_win_is_valid(self.settings_win) then
+    api.nvim_win_close(self.settings_win, true)
+  end
   self.main_win = nil
   self.input_win = nil
+  self.settings_win = nil
+  -- Keep pending_settings so they persist when reopening
 end
 
 ---Check if window is open
@@ -227,6 +477,15 @@ end
 ---@return boolean
 function ChatUI:is_open()
   return self.main_win and api.nvim_win_is_valid(self.main_win)
+end
+
+---Focus the input window
+---@param self ChatUI
+function ChatUI:focus_input()
+  if self.input_win and api.nvim_win_is_valid(self.input_win) then
+    api.nvim_set_current_win(self.input_win)
+    vim.cmd("startinsert")
+  end
 end
 
 ---Send message from input
@@ -244,8 +503,10 @@ function ChatUI:send_message()
     return
   end
 
-  -- Clear input
+  -- Clear input and reset height (set to 0 to force resize detection)
   api.nvim_buf_set_lines(self.input_buf, 0, -1, false, { "" })
+  self.input_height = 0
+  self:resize_input()
 
   -- Add user message
   self:add_message({
@@ -254,9 +515,9 @@ function ChatUI:send_message()
     timestamp = os.time() * 1000,
   })
 
-  -- Call send handler
+  -- Call send handler with pending settings (keep settings for next message)
   if self.on_send then
-    self.on_send(message)
+    self.on_send(message, self.pending_settings)
   end
 end
 
@@ -526,7 +787,266 @@ end
 function ChatUI:set_input(text)
   if self.input_buf and api.nvim_buf_is_valid(self.input_buf) then
     api.nvim_buf_set_lines(self.input_buf, 0, -1, false, vim.split(text, "\n"))
+    self:resize_input()
   end
+end
+
+---Replace command on line 1 with its template
+---@param self ChatUI
+function ChatUI:replace_command_with_template()
+  if not self.on_get_bang_commands then
+    return
+  end
+
+  local line = api.nvim_buf_get_lines(self.input_buf, 0, 1, false)[1] or ""
+  local cmd_name = line:match("^!?(%S+)$")
+  if not cmd_name then
+    return
+  end
+
+  local commands = self.on_get_bang_commands()
+  for _, cmd in ipairs(commands) do
+    if cmd.name == cmd_name then
+      local template = cmd.prompt_template or ""
+      api.nvim_buf_set_lines(self.input_buf, 0, 1, false, {template})
+      api.nvim_win_set_cursor(0, { 1, #template })
+      -- Apply command settings
+      self:apply_command_settings(cmd)
+      return
+    end
+  end
+end
+
+---Apply settings from a bang command
+---@param self ChatUI
+---@param cmd table
+function ChatUI:apply_command_settings(cmd)
+  if not cmd then return end
+
+  -- Create or update pending_settings
+  self.pending_settings = self.pending_settings or {}
+  if cmd.model then
+    self.pending_settings.model = cmd.model
+  end
+  if cmd.search_setting then
+    -- Normalize to array
+    if type(cmd.search_setting) == "table" then
+      self.pending_settings.search_setting = cmd.search_setting
+    else
+      self.pending_settings.search_setting = { cmd.search_setting }
+    end
+  end
+
+  -- Update settings bar
+  self:render_settings_bar()
+end
+
+---Get current effective settings (pending or default)
+---@param self ChatUI
+---@return table
+function ChatUI:get_effective_settings()
+  local defaults = {}
+  if self.on_get_default_settings then
+    defaults = self.on_get_default_settings()
+  end
+
+  -- Normalize search_setting to array
+  local search_setting = (self.pending_settings and self.pending_settings.search_setting) or defaults.search_setting
+  if search_setting and type(search_setting) ~= "table" then
+    search_setting = { search_setting }
+  end
+
+  return {
+    model = (self.pending_settings and self.pending_settings.model) or defaults.model or "gemini-3-flash-preview",
+    search_setting = search_setting,  -- array or nil
+  }
+end
+
+---Render the settings bar below input
+---@param self ChatUI
+function ChatUI:render_settings_bar()
+  if not self.settings_buf or not api.nvim_buf_is_valid(self.settings_buf) then
+    return
+  end
+
+  local settings = self:get_effective_settings()
+  local model_short = settings.model:gsub("gemini%-", ""):gsub("%-preview", "")
+
+  -- Build search text from array
+  local search_text = "Off"
+  if settings.search_setting and #settings.search_setting > 0 then
+    local parts = {}
+    local has_web = false
+    local rag_count = 0
+    for _, s in ipairs(settings.search_setting) do
+      if s == "__websearch__" then
+        has_web = true
+      else
+        rag_count = rag_count + 1
+      end
+    end
+    if has_web then table.insert(parts, "Web") end
+    if rag_count > 0 then table.insert(parts, "RAG(" .. rag_count .. ")") end
+    search_text = table.concat(parts, "+")
+  end
+
+  -- Check if there are pending overrides
+  local has_override = self.pending_settings and (self.pending_settings.model or self.pending_settings.search_setting)
+  local override_marker = has_override and "*" or ""
+
+  local text = string.format(" Model: %s | Search: %s %s", model_short, search_text, override_marker)
+
+  api.nvim_buf_set_option(self.settings_buf, "modifiable", true)
+  api.nvim_buf_set_lines(self.settings_buf, 0, -1, false, { text })
+  api.nvim_buf_set_option(self.settings_buf, "modifiable", false)
+end
+
+---Show settings modal for editing
+---@param self ChatUI
+function ChatUI:show_settings_modal()
+  local settings = self:get_effective_settings()
+
+  -- Build model options
+  local model_items = {}
+  for i, model in ipairs(self.available_models) do
+    local prefix = model == settings.model and "[x] " or "[ ] "
+    table.insert(model_items, { idx = i, display = prefix .. model, value = model })
+  end
+
+  -- First: select model
+  vim.ui.select(model_items, {
+    prompt = "Select model:",
+    format_item = function(item) return item.display end,
+  }, function(model_selected)
+    if model_selected then
+      self.pending_settings = self.pending_settings or {}
+      self.pending_settings.model = model_selected.value
+    end
+
+    -- Check current search settings
+    local current_search = settings.search_setting or {}
+    local has_web = vim.tbl_contains(current_search, "__websearch__")
+    local rag_stores = vim.tbl_filter(function(s) return s ~= "__websearch__" end, current_search)
+
+    -- Build search options (mutually exclusive: Web Search OR RAG stores)
+    local search_items = {
+      { display = "Off (clear all)", value = "off" },
+      { display = has_web and "[x] Web Search" or "[ ] Web Search", value = "web" },
+      { display = "Set RAG store...", value = "add_rag" },
+    }
+
+    vim.ui.select(search_items, {
+      prompt = "Search settings (Web/RAG are exclusive):",
+      format_item = function(item) return item.display end,
+    }, function(search_selected)
+      if search_selected then
+        self.pending_settings = self.pending_settings or {}
+
+        if search_selected.value == "off" then
+          self.pending_settings.search_setting = {}
+        elseif search_selected.value == "web" then
+          -- Toggle web search (clears RAG stores)
+          if has_web then
+            -- Turn off web search
+            self.pending_settings.search_setting = {}
+          else
+            -- Turn on web search (exclusive - clears RAG)
+            self.pending_settings.search_setting = { "__websearch__" }
+          end
+        elseif search_selected.value == "add_rag" then
+          -- Prompt for RAG store names (comma-separated, clears web search)
+          local current_rag = table.concat(rag_stores, ", ")
+          vim.ui.input({
+            prompt = "RAG stores (comma-separated): ",
+            default = current_rag,
+          }, function(input)
+            if input and input ~= "" then
+              -- Parse comma-separated store names
+              local stores = {}
+              for store in input:gmatch("[^,]+") do
+                local trimmed = store:match("^%s*(.-)%s*$")
+                if trimmed and trimmed ~= "" then
+                  table.insert(stores, trimmed)
+                end
+              end
+              if #stores > 0 then
+                -- RAG is exclusive - clears web search
+                self.pending_settings = self.pending_settings or {}
+                self.pending_settings.search_setting = stores
+                self:render_settings_bar()
+              end
+            end
+
+            -- Return focus to input
+            if self.input_win and api.nvim_win_is_valid(self.input_win) then
+              api.nvim_set_current_win(self.input_win)
+              vim.cmd("startinsert")
+            end
+          end)
+          return  -- Don't continue, input callback will handle focus
+        end
+      end
+
+      -- Update settings bar
+      self:render_settings_bar()
+
+      -- Return focus to input
+      if self.input_win and api.nvim_win_is_valid(self.input_win) then
+        api.nvim_set_current_win(self.input_win)
+        vim.cmd("startinsert")
+      end
+    end)
+  end)
+end
+
+---Show bang command completions
+---@param self ChatUI
+function ChatUI:show_bang_completions()
+  if not self.on_get_bang_commands then
+    vim.notify("No bang command callback", vim.log.levels.DEBUG)
+    return
+  end
+
+  local commands = self.on_get_bang_commands()
+  if not commands or #commands == 0 then
+    vim.notify("No commands configured. Use :GeminiAddBangCommand to add.", vim.log.levels.INFO)
+    return
+  end
+
+  -- Build completion items
+  local items = {}
+  for _, cmd in ipairs(commands) do
+    local word = cmd.name
+    local menu = cmd.description or cmd.prompt_template:sub(1, 30)
+    table.insert(items, { word = word, menu = menu })
+  end
+
+  -- Show completion menu (column is 1-indexed, start after !)
+  local col = vim.fn.col('.')
+  vim.fn.complete(col, items)
+end
+
+---Show file path completions
+---@param self ChatUI
+function ChatUI:show_file_completions()
+  if not self.on_get_files then
+    return
+  end
+
+  local files = self.on_get_files()
+  if not files or #files == 0 then
+    return
+  end
+
+  -- Build completion items
+  local items = {}
+  for _, file in ipairs(files) do
+    table.insert(items, { word = file, menu = "" })
+  end
+
+  -- Get cursor position for completion start
+  local col = api.nvim_win_get_cursor(0)[2]
+  vim.fn.complete(col + 1, items)  -- Start after the @
 end
 
 ---Get input text

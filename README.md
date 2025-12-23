@@ -1,6 +1,10 @@
 # Gemini Helper for Neovim
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/takeshy/nvim-gemini-helper)
+
 Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port of the Obsidian Gemini Helper plugin.
+
+![Gemini Helper Screenshot](gemini_helper.png)
 
 ## Features
 
@@ -8,7 +12,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port
 - **Function Calling**: AI can directly execute workspace operations (9 tools)
 - **Multiple Model Support**: Gemini 3 Flash/Pro Preview, 2.5 Flash Lite
 - **Web Search**: Search the web for up-to-date information using Google Search
-- **Slash Commands**: Custom command templates with variable expansion
+- **Bang Commands**: Custom command templates triggered with `!commandname`
 - **File Attachments**: Support for images and text files
 - **Chat History**: Auto-saves conversations to Markdown files
 - **Semantic Search (RAG)**: Semantic search using Google's File Search API with stores managed by [ragujuary](https://github.com/takeshy/ragujuary)
@@ -37,8 +41,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port
       model = "gemini-3-flash-preview", -- Default model
       workspace = vim.fn.getcwd(),
       allow_write = false, -- Enable to allow file modifications
-      rag_enabled = false, -- Enable for semantic search features
-      rag_store_name = nil, -- Store name created by ragujuary (e.g. "fileSearchStores/your-store")
+      search_setting = nil, -- Default: nil, "__websearch__", store name, or array
     })
   end,
 }
@@ -92,8 +95,9 @@ use {
 | `:GeminiTest` | Test API connection |
 | `:GeminiWebSearch` | Enable Web Search for messages |
 | `:GeminiSearchNone` | Disable search |
-| `:GeminiSlashCommands` | Show slash command picker |
-| `:GeminiAddSlashCommand <name> <template>` | Add a slash command |
+| `:GeminiBangCommands` | Show bang command picker |
+| `:GeminiAddBangCommand <name> <template>` | Add a bang command |
+| `:GeminiDebug` | Toggle debug mode |
 
 ## Default Keymaps
 
@@ -103,18 +107,44 @@ use {
 | `<leader>gn` | New Gemini chat |
 | `<leader>gh` | Show chat history |
 | `<leader>gs` | Show settings |
-| `<leader>g/` | Show slash commands |
+| `<leader>g/` | Show bang commands |
 | `<leader>gc` (visual) | Open chat with selection |
+| `<C-\>` | Toggle focus between chat and buffer |
 
 ### In Chat Window
 
 | Keymap | Description |
 |--------|-------------|
-| `<Enter>` | Send message |
+| `<Enter>` | Send message / Confirm completion |
 | `<S-Enter>` | Insert newline |
+| `<Tab>` | Next completion item |
+| `<S-Tab>` | Previous completion item |
+| `!` | Trigger bang command completion (at line 1) |
+| `?` | Open settings modal (at line 1) |
+| `<C-\>` | Switch to original buffer |
 | `<C-c>` | Stop generation |
 | `<C-q>` | Close (insert mode) |
 | `q` or `<Esc>` | Close (normal mode) |
+
+### Input Area
+
+- Default height: 2 lines
+- Automatically expands up to 10 lines based on content
+- When opening with selection, an empty line is added at top for `!` commands
+- Settings bar below input shows current model and search settings (with `*` if overridden)
+- Type `?` at the beginning of line 1 to open settings modal
+
+### Settings Modal (`?`)
+
+Press `?` at the beginning of line 1 to open the settings modal:
+
+1. **Model selection**: Choose from available models
+2. **Search settings**:
+   - Off (clear all)
+   - Web Search (exclusive with RAG)
+   - Set RAG stores (comma-separated, exclusive with Web Search)
+
+Settings changed via modal persist until Neovim exits. Web Search and RAG are mutually exclusive.
 
 ## Configuration
 
@@ -134,15 +164,11 @@ require("gemini_helper").setup({
   -- Permissions
   allow_write = false,  -- Allow AI to modify files
 
-  -- Search Settings
-  search_setting = nil,  -- nil=None, "__websearch__"=Web Search, or store name for semantic search
+  -- Search Settings (also used for RAG via ragujuary)
+  search_setting = nil,  -- nil=None, "__websearch__"=Web Search, store name, or array
 
-  -- Semantic Search (RAG via ragujuary)
-  rag_enabled = false,
-  rag_store_name = nil, -- e.g. "fileSearchStores/your-store"
-
-  -- Slash Commands
-  slash_commands = {},  -- Custom command templates
+  -- Bang Commands
+  commands = {},  -- Custom command templates
 
   -- UI
   chat_width = 80,
@@ -185,63 +211,68 @@ Enable Web Search to let the AI search the internet for up-to-date information.
 :GeminiWebSearch
 ```
 
-When enabled, the AI will use Google Search to find relevant information before responding. Note that Web Search cannot be used together with function calling tools or semantic search.
+When enabled, the AI will use Google Search to find relevant information before responding.
 
-## Slash Commands
+**Note**: Web Search and RAG (Semantic Search) are mutually exclusive. Enabling one will disable the other. Web Search also disables function calling tools.
 
-Create custom command templates that can be quickly invoked with `/commandname`.
+## Bang Commands
 
-### Adding Slash Commands
+Create custom command templates that can be quickly invoked with `!commandname`.
+
+### Adding Bang Commands
 
 Via command:
 ```vim
-:GeminiAddSlashCommand translate Translate the following to English: {selection}
+:GeminiAddBangCommand translate Translate the following to English:
 ```
 
 Via setup:
 ```lua
 require("gemini_helper").setup({
-  slash_commands = {
+  commands = {
     {
       name = "translate",
-      prompt_template = "Translate the following to English: {selection}",
-      description = "Translate selection to English",
+      prompt_template = "Translate the following to English:",
+      description = "Translate to English",
     },
     {
       name = "explain",
-      prompt_template = "Explain this code:\n{selection}",
+      prompt_template = "Explain this code:",
       description = "Explain selected code",
-      model = "gemini-3-pro-preview",  -- Use specific model
+      model = "gemini-3-pro-preview",  -- Override model for this command
     },
     {
       name = "search",
-      prompt_template = "Search for information about: {selection}",
+      prompt_template = "Search for information about:",
+      description = "Web search",
       search_setting = "__websearch__",  -- Enable Web Search
+    },
+    {
+      name = "docs",
+      prompt_template = "Find relevant documentation:",
+      description = "Search multiple RAG stores",
+      search_setting = { "docs-store", "api-store" },  -- Multiple RAG stores
     },
   },
 })
 ```
 
-### Available Variables
-
-| Variable | Description |
-|----------|-------------|
-| `{selection}` | Current visual selection |
-| `{file}` | Current file name |
-| `{filepath}` | Full file path |
-| `{line}` | Current line content |
-
-### Using Slash Commands
+### Using Bang Commands
 
 1. Select text in visual mode (optional)
 2. Open chat with `<leader>gc`
-3. Type `/commandname` and press Enter
+3. Type `!` at the beginning of line 1 to trigger completion
+4. Use `Tab`/`Shift-Tab` to navigate, `Enter` to confirm
+5. The command's `prompt_template` replaces the `!command`
+6. Selection text (if any) appears below for context
 
-Or use the picker: `<leader>g/` or `:GeminiSlashCommands`
+Or use the picker: `<leader>g/` or `:GeminiBangCommands`
 
 ## Semantic Search (RAG)
 
 Semantic search allows the AI to find relevant context from your files using Google's File Search API.
+
+**Note**: RAG and Web Search are mutually exclusive. You can use either RAG stores or Web Search, but not both at the same time.
 
 ### Setup Semantic Search
 
@@ -253,10 +284,12 @@ Semantic search allows the AI to find relevant context from your files using Goo
 3. Configure the plugin with your store name:
    ```lua
    require("gemini_helper").setup({
-     rag_enabled = true,
-     rag_store_name = "fileSearchStores/my-store",
+     search_setting = "my-store",  -- Single store
+     -- or multiple: search_setting = { "docs-store", "api-store" }
    })
    ```
+
+Or use the settings modal (`?` in chat) to set RAG stores dynamically (comma-separated for multiple stores).
 
 ### How It Works
 

@@ -29,13 +29,11 @@ M.defaults = {
   --   other string = Semantic search store name
   search_setting = nil,
 
-  -- RAG settings (use store created by ragujuary)
-  rag_enabled = false,
-  rag_store_name = nil, -- e.g. "fileSearchStores/your-store-name"
+  -- RAG settings
   rag_only = false, -- If true, disable function calling and use only RAG
 
-  -- Slash commands
-  slash_commands = {},  -- Array of { id, name, prompt_template, model, description, search_setting }
+  -- Bang commands
+  bang_commands = {},  -- Array of { id, name, prompt_template, description, model?, search_setting? }
 
   -- UI settings
   chat_width = 50,
@@ -169,28 +167,6 @@ function SettingsManager:get_all()
   return vim.deepcopy(self.settings)
 end
 
----Check if RAG is configured
----@param self SettingsManager
----@return boolean
-function SettingsManager:is_rag_configured()
-  return self.settings.rag_enabled and self.settings.rag_store_name ~= nil
-end
-
----Get RAG store name with proper format
----@param self SettingsManager
----@return string|nil
-function SettingsManager:get_rag_store_name()
-  local store_name = self.settings.rag_store_name
-  if not store_name then
-    return nil
-  end
-  -- Auto-prepend fileSearchStores/ if not present
-  if not store_name:match("^fileSearchStores/") then
-    store_name = "fileSearchStores/" .. store_name
-  end
-  return store_name
-end
-
 ---Check if Web Search is enabled
 ---@param self SettingsManager
 ---@return boolean
@@ -212,30 +188,30 @@ function SettingsManager:get_search_type()
   end
 end
 
----Get slash commands
+---Get bang commands
 ---@param self SettingsManager
 ---@return table[]
-function SettingsManager:get_slash_commands()
-  return self.settings.slash_commands or {}
+function SettingsManager:get_bang_commands()
+  return self.settings.bang_commands or {}
 end
 
----Add a slash command
+---Add a bang command
 ---@param self SettingsManager
 ---@param command table
-function SettingsManager:add_slash_command(command)
-  self.settings.slash_commands = self.settings.slash_commands or {}
+function SettingsManager:add_bang_command(command)
+  self.settings.bang_commands = self.settings.bang_commands or {}
   -- Generate ID if not provided
   if not command.id then
     command.id = tostring(os.time()) .. "_" .. math.random(1000, 9999)
   end
-  table.insert(self.settings.slash_commands, command)
+  table.insert(self.settings.bang_commands, command)
 end
 
----Remove a slash command by id
+---Remove a bang command by id
 ---@param self SettingsManager
 ---@param id string
-function SettingsManager:remove_slash_command(id)
-  local commands = self.settings.slash_commands or {}
+function SettingsManager:remove_bang_command(id)
+  local commands = self.settings.bang_commands or {}
   for i, cmd in ipairs(commands) do
     if cmd.id == id then
       table.remove(commands, i)
@@ -244,12 +220,12 @@ function SettingsManager:remove_slash_command(id)
   end
 end
 
----Find slash command by name
+---Find bang command by name
 ---@param self SettingsManager
 ---@param name string
 ---@return table|nil
-function SettingsManager:find_slash_command(name)
-  local commands = self.settings.slash_commands or {}
+function SettingsManager:find_bang_command(name)
+  local commands = self.settings.bang_commands or {}
   for _, cmd in ipairs(commands) do
     if cmd.name == name then
       return cmd
