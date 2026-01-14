@@ -7,6 +7,7 @@ M.version = "1.0.0"
 
 -- Module imports
 local gemini = require("gemini_helper.core.gemini")
+local cli_provider = require("gemini_helper.core.cli_provider")
 local tools = require("gemini_helper.core.tools")
 local notes = require("gemini_helper.vault.notes")
 local search = require("gemini_helper.vault.search")
@@ -19,6 +20,7 @@ local chat_ui = require("gemini_helper.ui.chat")
 local state = {
   settings = nil,
   gemini_client = nil,
+  cli_manager = nil,  -- CLI Provider Manager
   notes_manager = nil,
   search_manager = nil,
   executor = nil,
@@ -97,6 +99,9 @@ function M.setup(opts)
   if api_key and api_key ~= "" then
     state.gemini_client = gemini.new(api_key, state.settings:get("model"))
   end
+
+  -- Initialize CLI provider manager
+  state.cli_manager = cli_provider.new_manager()
 
   -- Initialize tool executor
   state.executor = tool_executor.new(
@@ -179,6 +184,19 @@ function M.setup(opts)
     vim.notify("Debug mode: " .. (not current and "ON" or "OFF"), vim.log.levels.INFO)
   end, { desc = "Toggle debug mode" })
 
+  -- CLI Provider verification commands
+  vim.api.nvim_create_user_command("GeminiVerifyGeminiCli", function()
+    M.verify_cli("gemini-cli")
+  end, { desc = "Verify Gemini CLI installation" })
+
+  vim.api.nvim_create_user_command("GeminiVerifyClaudeCli", function()
+    M.verify_cli("claude-cli")
+  end, { desc = "Verify Claude CLI installation" })
+
+  vim.api.nvim_create_user_command("GeminiVerifyCodexCli", function()
+    M.verify_cli("codex-cli")
+  end, { desc = "Verify Codex CLI installation" })
+
   vim.notify("Gemini Helper loaded", vim.log.levels.INFO)
 end
 
@@ -204,8 +222,15 @@ end
 ---Open chat window
 ---@param initial_input string|nil  Optional initial text for input
 function M.open_chat(initial_input)
-  if not state.gemini_client then
-    vim.notify("Please set your Google API key first with :GeminiSetApiKey", vim.log.levels.WARN)
+  -- Check if we have either API key or verified CLI provider
+  local has_api = state.gemini_client ~= nil
+  local has_cli = state.settings and state.settings:has_verified_cli()
+
+  if not has_api and not has_cli then
+    vim.notify(
+      "Please set your Google API key with :GeminiSetApiKey or verify a CLI provider with :GeminiVerifyClaudeCli",
+      vim.log.levels.WARN
+    )
     return
   end
 
@@ -233,10 +258,20 @@ function M.open_chat(initial_input)
         M.handle_message(final_message, pending_settings)
       end,
       on_stop = function()
+        -- Stop API client
         if state.gemini_client then
           state.gemini_client:abort()
-          vim.notify("Generation stopped", vim.log.levels.INFO)
         end
+        -- Stop CLI providers
+        if state.cli_manager then
+          for _, provider_name in ipairs(cli_provider.PROVIDERS) do
+            local provider = state.cli_manager:get_provider(provider_name)
+            if provider and provider:is_streaming() then
+              provider:abort()
+            end
+          end
+        end
+        vim.notify("Generation stopped", vim.log.levels.INFO)
       end,
       on_get_bang_commands = function()
         return state.settings:get_bang_commands()
@@ -265,6 +300,7 @@ function M.open_chat(initial_input)
         return {
           model = state.settings:get("model"),
           search_setting = state.settings:get("search_setting"),
+          auto_copy_response = state.settings:get("auto_copy_response"),
         }
       end,
       on_get_original_win = function()
@@ -273,11 +309,7 @@ function M.open_chat(initial_input)
         end
         return nil
       end,
-      available_models = {
-        "gemini-3-flash-preview",
-        "gemini-3-pro-preview",
-        "gemini-2.5-flash-lite",
-      },
+      available_models = M.get_available_models(),
     })
   end
 
@@ -327,12 +359,21 @@ end
 ---@param message string
 ---@param opts table|nil  Optional overrides for model, search_setting
 function M.handle_message(message, opts)
+  opts = opts or {}
+
+  -- Determine which model to use
+  local model = opts.model or state.settings:get("model")
+
+  -- Check if this is a CLI model
+  if cli_provider.is_cli_model(model) then
+    return M.handle_cli_message(message, opts, model)
+  end
+
+  -- API-based message handling
   if not state.gemini_client then
     vim.notify("Gemini client not initialized", vim.log.levels.ERROR)
     return
   end
-
-  opts = opts or {}
 
   state.chat:start_streaming()
 
@@ -453,6 +494,97 @@ function M.handle_message(message, opts)
           #rag_sources > 0 and rag_sources or nil,
           result.web_search_used or web_search_used
         )
+
+        -- Save chat
+        if state.current_chat_id then
+          local all_messages = state.chat:get_messages()
+          state.history_manager:save(state.current_chat_id, all_messages)
+        end
+      end)
+    end,
+    on_error = function(err)
+      vim.schedule(function()
+        state.chat:end_streaming()
+        state.chat:show_error(tostring(err))
+      end)
+    end,
+  })
+end
+
+---Handle message via CLI provider
+---@param message string
+---@param opts table
+---@param model string
+function M.handle_cli_message(message, opts, model)
+  local provider_type = cli_provider.get_provider_type(model)
+  local provider = state.cli_manager:get_provider(provider_type)
+
+  if not provider then
+    vim.notify("CLI provider not available: " .. model, vim.log.levels.ERROR)
+    return
+  end
+
+  -- Check verification
+  if not state.settings:is_cli_verified(provider_type) then
+    local verify_cmd = "GeminiVerify" .. provider_type:gsub("%-cli", ""):gsub("^%l", string.upper) .. "Cli"
+    vim.notify(
+      "Please verify " .. provider.display_name .. " first with :" .. verify_cmd,
+      vim.log.levels.WARN
+    )
+    return
+  end
+
+  state.chat:start_streaming()
+
+  -- Get session ID for resumption (Claude/Codex only)
+  local session_id = nil
+  if provider.supports_session_resumption and state.current_chat_id then
+    session_id = state.settings:get_cli_session(state.current_chat_id, provider_type)
+  end
+
+  -- Build messages
+  local messages = {}
+  for _, msg in ipairs(state.chat:get_messages()) do
+    table.insert(messages, {
+      role = msg.role,
+      content = msg.content,
+    })
+  end
+
+  -- Get system prompt
+  local system_prompt = state.settings:get("system_prompt")
+  if not system_prompt or system_prompt == "" then
+    system_prompt = DEFAULT_SYSTEM_PROMPT
+  end
+
+  provider:chat_stream({
+    messages = messages,
+    system_prompt = system_prompt,
+    working_directory = state.settings:get("workspace"),
+    session_id = session_id,
+    on_chunk = function(chunk)
+      vim.schedule(function()
+        if chunk.type == "text" then
+          state.chat:set_status("Receiving response...")
+          state.chat:update_streaming(chunk.content)
+        elseif chunk.type == "session_id" then
+          -- Store session ID for future resumption
+          if state.current_chat_id then
+            state.settings:set_cli_session(state.current_chat_id, provider_type, chunk.session_id)
+          end
+        elseif chunk.type == "error" then
+          state.chat:show_error(chunk.error)
+        end
+      end)
+    end,
+    on_done = function(result)
+      vim.schedule(function()
+        state.chat:end_streaming(nil, nil, nil, result.aborted)
+
+        -- Store session ID if provided
+        if result.session_id and state.current_chat_id then
+          state.settings:set_cli_session(state.current_chat_id, provider_type, result.session_id)
+        end
 
         -- Save chat
         if state.current_chat_id then
@@ -750,6 +882,61 @@ function M.test_api()
   else
     vim.notify("API Response: " .. (result or "empty"), vim.log.levels.INFO)
   end
+end
+
+---Verify CLI provider installation
+---@param provider_type string  "gemini-cli", "claude-cli", or "codex-cli"
+function M.verify_cli(provider_type)
+  vim.notify("Verifying " .. provider_type .. "...", vim.log.levels.INFO)
+
+  local result
+  if provider_type == "gemini-cli" then
+    result = cli_provider.verify_gemini_cli()
+  elseif provider_type == "claude-cli" then
+    result = cli_provider.verify_claude_cli()
+  elseif provider_type == "codex-cli" then
+    result = cli_provider.verify_codex_cli()
+  else
+    vim.notify("Unknown CLI provider: " .. provider_type, vim.log.levels.ERROR)
+    return
+  end
+
+  if result.success then
+    state.settings:set_cli_verified(provider_type, true)
+    state.settings:save()
+    vim.notify(provider_type .. " verified successfully!", vim.log.levels.INFO)
+  else
+    vim.notify(
+      provider_type .. " verification failed at " .. result.stage .. ": " .. (result.error or "unknown error"),
+      vim.log.levels.ERROR
+    )
+  end
+end
+
+---Get available models (API + verified CLI)
+---@return string[]
+function M.get_available_models()
+  local models = {
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview",
+    "gemini-2.5-flash-lite",
+  }
+
+  -- Add verified CLI providers
+  if state.settings then
+    local verified_cli = state.settings:get_verified_cli_providers()
+    for _, cli_model in ipairs(verified_cli) do
+      table.insert(models, cli_model)
+    end
+  end
+
+  return models
+end
+
+---Get CLI manager
+---@return table|nil
+function M.get_cli_manager()
+  return state.cli_manager
 end
 
 return M

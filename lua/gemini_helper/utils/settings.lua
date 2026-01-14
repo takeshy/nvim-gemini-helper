@@ -42,6 +42,19 @@ M.defaults = {
 
   -- Debug
   debug_mode = false,
+
+  -- Auto copy response to * register
+  auto_copy_response = true,
+
+  -- CLI Provider settings
+  cli_config = {
+    gemini_cli_verified = false,
+    claude_cli_verified = false,
+    codex_cli_verified = false,
+  },
+
+  -- Session IDs for CLI providers (per-chat)
+  cli_sessions = {},  -- { [chat_id] = { ["claude-cli"] = session_id, ["codex-cli"] = thread_id } }
 }
 
 ---@class SettingsManager
@@ -232,6 +245,98 @@ function SettingsManager:find_bang_command(name)
     end
   end
   return nil
+end
+
+-- ============================================================================
+-- CLI Provider Settings
+-- ============================================================================
+
+---Check if a CLI provider is verified
+---@param self SettingsManager
+---@param provider string  "gemini-cli", "claude-cli", or "codex-cli"
+---@return boolean
+function SettingsManager:is_cli_verified(provider)
+  local config = self.settings.cli_config or {}
+  if provider == "gemini-cli" then
+    return config.gemini_cli_verified or false
+  elseif provider == "claude-cli" then
+    return config.claude_cli_verified or false
+  elseif provider == "codex-cli" then
+    return config.codex_cli_verified or false
+  end
+  return false
+end
+
+---Set CLI provider verification status
+---@param self SettingsManager
+---@param provider string
+---@param verified boolean
+function SettingsManager:set_cli_verified(provider, verified)
+  self.settings.cli_config = self.settings.cli_config or {}
+  if provider == "gemini-cli" then
+    self.settings.cli_config.gemini_cli_verified = verified
+  elseif provider == "claude-cli" then
+    self.settings.cli_config.claude_cli_verified = verified
+  elseif provider == "codex-cli" then
+    self.settings.cli_config.codex_cli_verified = verified
+  end
+end
+
+---Get CLI session ID for a chat
+---@param self SettingsManager
+---@param chat_id string
+---@param provider string
+---@return string|nil
+function SettingsManager:get_cli_session(chat_id, provider)
+  local sessions = self.settings.cli_sessions or {}
+  local chat_sessions = sessions[chat_id] or {}
+  return chat_sessions[provider]
+end
+
+---Set CLI session ID for a chat
+---@param self SettingsManager
+---@param chat_id string
+---@param provider string
+---@param session_id string
+function SettingsManager:set_cli_session(chat_id, provider, session_id)
+  self.settings.cli_sessions = self.settings.cli_sessions or {}
+  self.settings.cli_sessions[chat_id] = self.settings.cli_sessions[chat_id] or {}
+  self.settings.cli_sessions[chat_id][provider] = session_id
+end
+
+---Clear CLI session for a chat
+---@param self SettingsManager
+---@param chat_id string
+function SettingsManager:clear_cli_session(chat_id)
+  if self.settings.cli_sessions then
+    self.settings.cli_sessions[chat_id] = nil
+  end
+end
+
+---Check if any CLI provider is verified
+---@param self SettingsManager
+---@return boolean
+function SettingsManager:has_verified_cli()
+  local config = self.settings.cli_config or {}
+  return config.gemini_cli_verified or config.claude_cli_verified or config.codex_cli_verified
+end
+
+---Get all verified CLI providers
+---@param self SettingsManager
+---@return string[]
+function SettingsManager:get_verified_cli_providers()
+  local providers = {}
+  local config = self.settings.cli_config or {}
+  if config.gemini_cli_verified then
+    table.insert(providers, "gemini-cli")
+  end
+  if config.claude_cli_verified then
+    table.insert(providers, "claude-cli")
+  end
+  if config.codex_cli_verified then
+    table.insert(providers, "codex-cli")
+  end
+  return providers
 end
 
 return M

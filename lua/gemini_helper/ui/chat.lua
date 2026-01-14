@@ -542,7 +542,11 @@ end
 function ChatUI:start_streaming()
   self.is_streaming = true
   self.current_response = ""
-  self.status = "Connecting to Gemini API..."
+
+  -- Set status based on current model
+  local model_name = self:get_model_display_name()
+  self.status = "Connecting to " .. model_name .. "..."
+
   self.tool_calls = {}
   self:render()
 
@@ -595,11 +599,14 @@ function ChatUI:end_streaming(tools_used, rag_sources, web_search_used, aborted)
   self.status = ""
   self:stop_spinner()
 
+  local response_content = nil
+
   if self.current_response ~= "" then
     local content = self.current_response
     if aborted then
       content = content .. "\n\n*(Generation stopped)*"
     end
+    response_content = content
     self:add_message({
       role = "assistant",
       content = content,
@@ -617,6 +624,17 @@ function ChatUI:end_streaming(tools_used, rag_sources, web_search_used, aborted)
     })
   end
 
+  -- Auto copy response to * register if enabled
+  if response_content and not aborted then
+    local settings = {}
+    if self.on_get_default_settings then
+      settings = self.on_get_default_settings()
+    end
+    if settings.auto_copy_response ~= false then
+      vim.fn.setreg('*', response_content)
+    end
+  end
+
   self.current_response = ""
   self.tool_calls = {}
 end
@@ -631,6 +649,26 @@ function ChatUI:add_tool_call(tool_name, args)
   self:render()
 end
 
+---Get display name for the current model
+---@param self ChatUI
+---@return string
+function ChatUI:get_model_display_name()
+  local settings = self:get_effective_settings()
+  local model = settings.model
+
+  -- CLI models
+  if model == "claude-cli" then
+    return "Claude"
+  elseif model == "codex-cli" then
+    return "Codex"
+  elseif model == "gemini-cli" then
+    return "Gemini CLI"
+  end
+
+  -- API models - use provided model_name or derive from model
+  return self.model_name or "Gemini"
+end
+
 ---Render the chat
 ---@param self ChatUI
 function ChatUI:render()
@@ -641,8 +679,11 @@ function ChatUI:render()
   local lines = {}
   local highlights = {}
 
+  -- Get display name for assistant messages
+  local assistant_name = self:get_model_display_name()
+
   for _, msg in ipairs(self.messages) do
-    local role_name = msg.role == "user" and "You" or self.model_name
+    local role_name = msg.role == "user" and "You" or assistant_name
     local hl_group = msg.role == "user" and "GeminiUser" or "GeminiAssistant"
 
     -- Role header
@@ -691,7 +732,7 @@ function ChatUI:render()
   if self.is_streaming then
     local header_line = #lines
     local spinner = spinner_frames[spinner_index]
-    table.insert(lines, string.format("### %s %s", self.model_name, spinner))
+    table.insert(lines, string.format("### %s %s", assistant_name, spinner))
     table.insert(highlights, { line = header_line, col = 0, end_col = -1, hl = "GeminiAssistant" })
 
     -- Show status
@@ -870,11 +911,23 @@ function ChatUI:render_settings_bar()
   end
 
   local settings = self:get_effective_settings()
-  local model_short = settings.model:gsub("gemini%-", ""):gsub("%-preview", "")
+
+  -- Shorten model name for display
+  local model_short = settings.model
+  if model_short:match("^gemini%-") then
+    model_short = model_short:gsub("gemini%-", ""):gsub("%-preview", "")
+  elseif model_short:match("%-cli$") then
+    -- CLI models: show as "CLI:claude", "CLI:gemini", "CLI:codex"
+    model_short = "CLI:" .. model_short:gsub("%-cli$", "")
+  end
 
   -- Build search text from array
   local search_text = "Off"
-  if settings.search_setting and #settings.search_setting > 0 then
+
+  -- CLI models don't support search
+  if settings.model and settings.model:match("%-cli$") then
+    search_text = "-"
+  elseif settings.search_setting and #settings.search_setting > 0 then
     local parts = {}
     local has_web = false
     local rag_count = 0
@@ -921,6 +974,24 @@ function ChatUI:show_settings_modal()
     if model_selected then
       self.pending_settings = self.pending_settings or {}
       self.pending_settings.model = model_selected.value
+    end
+
+    -- Get the selected model (or current if not changed)
+    local selected_model = (self.pending_settings and self.pending_settings.model) or settings.model
+
+    -- CLI models don't support Web Search or RAG - skip search settings dialog
+    if selected_model and selected_model:match("%-cli$") then
+      -- Clear any search settings for CLI models
+      self.pending_settings = self.pending_settings or {}
+      self.pending_settings.search_setting = {}
+
+      -- Update settings bar and return focus
+      self:render_settings_bar()
+      if self.input_win and api.nvim_win_is_valid(self.input_win) then
+        api.nvim_set_current_win(self.input_win)
+        vim.cmd("startinsert")
+      end
+      return
     end
 
     -- Check current search settings

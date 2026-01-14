@@ -9,8 +9,9 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port
 ## Features
 
 - **Streaming Chat Interface**: Real-time response streaming with Gemini API
+- **CLI Provider Support**: Use Gemini CLI, Claude CLI, or Codex CLI as alternative backends
 - **Function Calling**: AI can directly execute workspace operations (9 tools)
-- **Multiple Model Support**: Gemini 3 Flash/Pro Preview, 2.5 Flash Lite
+- **Multiple Model Support**: Gemini 3 Flash/Pro Preview, 2.5 Flash Lite, and CLI models
 - **Web Search**: Search the web for up-to-date information using Google Search
 - **Bang Commands**: Custom command templates triggered with `!commandname`
 - **File Attachments**: Support for images and text files
@@ -18,6 +19,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port
 - **Semantic Search (RAG)**: Semantic search using Google's File Search API with stores managed by [ragujuary](https://github.com/takeshy/ragujuary)
 - **Safe Editing**: Propose-edit workflow with apply/discard confirmation
 - **Local Search**: Filename and content-based search with relevance scoring
+- **Auto Copy Response**: Automatically copy AI responses to `*` register
 
 ## Requirements
 
@@ -98,6 +100,9 @@ use {
 | `:GeminiBangCommands` | Show bang command picker |
 | `:GeminiAddBangCommand <name> <template>` | Add a bang command |
 | `:GeminiDebug` | Toggle debug mode |
+| `:GeminiVerifyGeminiCli` | Verify Gemini CLI installation |
+| `:GeminiVerifyClaudeCli` | Verify Claude CLI installation |
+| `:GeminiVerifyCodexCli` | Verify Codex CLI installation |
 
 ## Default Keymaps
 
@@ -173,6 +178,9 @@ require("gemini_helper").setup({
   -- UI
   chat_width = 80,
   chat_height = 20,
+
+  -- Auto copy
+  auto_copy_response = true,  -- Auto copy AI response to * register
 
   -- Debug
   debug_mode = false,
@@ -333,11 +341,55 @@ AI response here...
 
 ## Available Models
 
+### API Models
+
 | Model | Description |
 |-------|-------------|
 | `gemini-3-flash-preview` | Latest fast model with 1M context (default, recommended) |
 | `gemini-3-pro-preview` | Latest flagship model with 1M context, best performance |
 | `gemini-2.5-flash-lite` | Lightweight flash model |
+
+### CLI Models
+
+CLI models require the respective CLI tool to be installed and verified.
+
+| Model | Description |
+|-------|-------------|
+| `gemini-cli` | Google Gemini via command line (requires Google account) |
+| `claude-cli` | Anthropic Claude via command line (requires Anthropic account) |
+| `codex-cli` | OpenAI Codex via command line (requires OpenAI account) |
+
+## CLI Providers
+
+Use CLI-based AI backends without requiring API keys. CLI models support session resumption (Claude/Codex) for maintaining conversation context.
+
+### Setup
+
+1. Install the CLI tool:
+   ```bash
+   # Gemini CLI
+   npm install -g @google/gemini-cli
+
+   # Claude CLI
+   npm install -g @anthropic-ai/claude-code
+
+   # Codex CLI
+   npm install -g @openai/codex
+   ```
+
+2. Verify the installation:
+   ```vim
+   :GeminiVerifyClaudeCli
+   ```
+
+3. Select the CLI model in the settings modal (`?` in chat)
+
+### Notes
+
+- CLI models don't support Web Search or RAG
+- Claude CLI and Codex CLI support session resumption
+- No API key required (uses CLI authentication)
+- Verified CLI models appear in the model selector
 
 ## License
 

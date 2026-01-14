@@ -9,8 +9,9 @@ Google Gemini AIをNeovimで使うためのプラグインです。RAG（File Se
 ## 機能
 
 - **ストリーミングチャット**: Gemini APIでリアルタイム応答
+- **CLIプロバイダー対応**: Gemini CLI、Claude CLI、Codex CLIを代替バックエンドとして使用可能
 - **Function Calling**: AIがワークスペースを直接操作（9種類のツール）
-- **複数モデル対応**: Gemini 3 Flash/Pro Preview、2.5 Flash Lite
+- **複数モデル対応**: Gemini 3 Flash/Pro Preview、2.5 Flash Lite、CLIモデル
 - **Web Search**: Google検索で最新情報を取得
 - **Bangコマンド**: `!コマンド名`で呼び出せるカスタムコマンドテンプレート
 - **ファイル添付**: 画像やテキストファイルの添付
@@ -18,6 +19,7 @@ Google Gemini AIをNeovimで使うためのプラグインです。RAG（File Se
 - **セマンティック検索（RAG）**: [ragujuary](https://github.com/takeshy/ragujuary)で管理されたストアを使った意味検索
 - **Safe Editing**: 提案→確認→適用の安全な編集ワークフロー
 - **ローカル検索**: ファイル名・コンテンツ検索（関連度スコア付き）
+- **応答自動コピー**: AI応答を自動的に`*`レジスタにコピー
 
 ## 必要条件
 
@@ -98,6 +100,9 @@ use {
 | `:GeminiBangCommands` | Bangコマンドピッカーを表示 |
 | `:GeminiAddBangCommand <名前> <テンプレート>` | Bangコマンドを追加 |
 | `:GeminiDebug` | デバッグモードを切り替え |
+| `:GeminiVerifyGeminiCli` | Gemini CLIのインストールを検証 |
+| `:GeminiVerifyClaudeCli` | Claude CLIのインストールを検証 |
+| `:GeminiVerifyCodexCli` | Codex CLIのインストールを検証 |
 
 ## デフォルトキーマップ
 
@@ -173,6 +178,9 @@ require("gemini_helper").setup({
   -- UI
   chat_width = 80,  -- チャットウィンドウの幅
   chat_height = 20,  -- チャットウィンドウの高さ
+
+  -- 自動コピー
+  auto_copy_response = true,  -- AI応答を*レジスタに自動コピー
 
   -- デバッグ
   debug_mode = false,
@@ -342,11 +350,55 @@ AIの応答...
 
 ## 利用可能なモデル
 
+### APIモデル
+
 | モデル | 説明 |
 |--------|------|
 | `gemini-3-flash-preview` | 最新の高速モデル、1Mコンテキスト（デフォルト、推奨） |
 | `gemini-3-pro-preview` | 最新のフラッグシップモデル、1Mコンテキスト、最高性能 |
 | `gemini-2.5-flash-lite` | 軽量フラッシュモデル |
+
+### CLIモデル
+
+CLIモデルは対応するCLIツールのインストールと検証が必要です。
+
+| モデル | 説明 |
+|--------|------|
+| `gemini-cli` | コマンドライン経由のGoogle Gemini（Googleアカウントが必要） |
+| `claude-cli` | コマンドライン経由のAnthropic Claude（Anthropicアカウントが必要） |
+| `codex-cli` | コマンドライン経由のOpenAI Codex（OpenAIアカウントが必要） |
+
+## CLIプロバイダー
+
+APIキー不要でCLIベースのAIバックエンドを使用できます。CLIモデルはセッション再開（Claude/Codex）をサポートし、会話コンテキストを維持できます。
+
+### セットアップ
+
+1. CLIツールをインストール:
+   ```bash
+   # Gemini CLI
+   npm install -g @google/gemini-cli
+
+   # Claude CLI
+   npm install -g @anthropic-ai/claude-code
+
+   # Codex CLI
+   npm install -g @openai/codex
+   ```
+
+2. インストールを検証:
+   ```vim
+   :GeminiVerifyClaudeCli
+   ```
+
+3. 設定モーダル（チャットで`?`）でCLIモデルを選択
+
+### 注意事項
+
+- CLIモデルはWeb SearchやRAGをサポートしていません
+- Claude CLIとCodex CLIはセッション再開をサポート
+- APIキー不要（CLI認証を使用）
+- 検証済みCLIモデルはモデル選択に表示されます
 
 ## 設定ファイル
 

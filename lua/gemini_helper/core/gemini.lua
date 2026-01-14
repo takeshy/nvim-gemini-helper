@@ -37,6 +37,38 @@ M.MODEL_INFO = {
   },
 }
 
+-- CLI Model info (for UI, loaded from cli_provider module)
+M.CLI_MODEL_INFO = {
+  {
+    name = "gemini-cli",
+    display_name = "Gemini CLI",
+    description = "Google Gemini via command line (requires Google account)",
+    is_cli_model = true,
+  },
+  {
+    name = "claude-cli",
+    display_name = "Claude CLI",
+    description = "Anthropic Claude via command line (requires Anthropic account)",
+    is_cli_model = true,
+  },
+  {
+    name = "codex-cli",
+    display_name = "Codex CLI",
+    description = "OpenAI Codex via command line (requires OpenAI account)",
+    is_cli_model = true,
+  },
+}
+
+---Get all model info (API + CLI)
+---@return table[]
+function M.get_all_model_info()
+  local all = vim.deepcopy(M.MODEL_INFO)
+  for _, cli_model in ipairs(M.CLI_MODEL_INFO) do
+    table.insert(all, cli_model)
+  end
+  return all
+end
+
 ---@class GeminiClient
 ---@field api_key string
 ---@field model string
