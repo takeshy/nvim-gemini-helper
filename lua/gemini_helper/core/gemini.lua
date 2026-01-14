@@ -198,13 +198,30 @@ function M.messages_to_history(messages)
       end
     end
 
-    -- Add tool results if present
+    -- Add function calls if present (for assistant messages)
+    if msg.tool_calls then
+      for _, fc in ipairs(msg.tool_calls) do
+        local part = {
+          functionCall = {
+            name = fc.name,
+            args = fc.args or {},
+          }
+        }
+        -- Include thoughtSignature if present (required by Gemini API)
+        if fc.thoughtSignature then
+          part.thoughtSignature = fc.thoughtSignature
+        end
+        table.insert(parts, part)
+      end
+    end
+
+    -- Add tool results if present (for user messages)
     if msg.tool_results then
       for _, result in ipairs(msg.tool_results) do
         table.insert(parts, {
           functionResponse = {
             name = result.name,
-            response = { result = result.result },
+            response = result.result,
           }
         })
       end
@@ -415,6 +432,7 @@ function GeminiClient:chat_stream(opts)
                         table.insert(function_calls, {
                           name = part.functionCall.name,
                           args = part.functionCall.args or {},
+                          thoughtSignature = part.thoughtSignature,
                         })
                       end
                     end
@@ -636,7 +654,12 @@ function GeminiClient:chat_with_tools(opts)
           -- Execute tools and collect results
           local tool_results = {}
           for _, fc in ipairs(result.function_calls) do
-            local tool_result = execute_tool(fc.name, fc.args)
+            local ok, tool_result = pcall(function()
+              return execute_tool(fc.name, fc.args)
+            end)
+            if not ok then
+              tool_result = { success = false, error = tostring(tool_result) }
+            end
             table.insert(tool_results, {
               name = fc.name,
               result = tool_result,
@@ -666,7 +689,9 @@ function GeminiClient:chat_with_tools(opts)
           })
 
           -- Continue the loop
-          do_iteration()
+          vim.schedule(function()
+            do_iteration()
+          end)
         else
           -- No more function calls, we're done
           if on_done then

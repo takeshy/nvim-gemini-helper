@@ -147,9 +147,13 @@ function ToolExecutor:handle_get_active_note_info(args)
     return { success = false, error = err }
   end
 
+  -- Always return success with workspace/cwd info
   return {
     success = true,
-    info = info,
+    workspace = info.workspace,
+    cwd = info.cwd,
+    note = info.note,
+    message = info.message,
   }
 end
 

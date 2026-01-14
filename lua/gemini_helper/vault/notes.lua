@@ -96,14 +96,24 @@ end
 function NotesManager:get_active_info(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
 
+  -- Always include workspace info
+  local result = {
+    workspace = self.workspace,
+    cwd = vim.fn.getcwd(),
+  }
+
   if not vim.api.nvim_buf_is_valid(bufnr) then
-    return nil, "Invalid buffer"
+    result.note = nil
+    result.message = "Invalid buffer"
+    return result, nil
   end
 
   local filepath = vim.api.nvim_buf_get_name(bufnr)
 
   if filepath == "" then
-    return nil, "No active file (buffer has no file)"
+    result.note = nil
+    result.message = "No active file (buffer has no file)"
+    return result, nil
   end
 
   local stat = vim.loop.fs_stat(filepath)
@@ -116,7 +126,7 @@ function NotesManager:get_active_info(bufnr)
 
   local line_count = vim.api.nvim_buf_line_count(bufnr)
 
-  return {
+  result.note = {
     name = vim.fn.fnamemodify(filepath, ":t:r"),
     path = relative_path,
     full_path = filepath,
@@ -124,7 +134,9 @@ function NotesManager:get_active_info(bufnr)
     size = stat and stat.size or 0,
     modified = vim.api.nvim_buf_get_option(bufnr, "modified"),
     filetype = vim.api.nvim_buf_get_option(bufnr, "filetype"),
-  }, nil
+  }
+
+  return result, nil
 end
 
 ---Create a new note
@@ -303,7 +315,9 @@ end
 ---List all folders
 ---@param self NotesManager
 ---@return string[]
-function NotesManager:list_folders()
+function NotesManager:list_folders(max_depth, max_count)
+  max_depth = max_depth or 3
+  max_count = max_count or 100
   local folders = {}
 
   local found = scandir.scan_dir(self.workspace, {
@@ -311,13 +325,16 @@ function NotesManager:list_folders()
     add_dirs = true,
     only_dirs = true,
     respect_gitignore = true,
-    depth = 99,
+    depth = max_depth,
   })
 
   for _, dirpath in ipairs(found) do
     local relative_path = dirpath:sub(#self.workspace + 2)
     if relative_path ~= "" then
       table.insert(folders, relative_path)
+      if #folders >= max_count then
+        break
+      end
     end
   end
 

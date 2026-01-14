@@ -91,7 +91,7 @@ M.list_folders = {
 
 M.get_active_note_info = {
   name = "get_active_note_info",
-  description = "Get metadata about the currently active buffer including name, path, and basic stats.",
+  description = "Get workspace/cwd info and metadata about the currently active buffer. Always returns workspace and cwd paths, even if no file is open.",
   category = "read",
   parameters = {
     type = "object",
