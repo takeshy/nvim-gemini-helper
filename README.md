@@ -1,6 +1,6 @@
 # Gemini Helper for Neovim
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/takeshy/nvim-gemini-helper)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/takeshy/nvim-gemini-helper)
 
 Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port of the Obsidian Gemini Helper plugin.
 
