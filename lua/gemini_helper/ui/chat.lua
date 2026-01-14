@@ -335,14 +335,9 @@ function ChatUI:open()
     self:close()
   end, input_opts)
 
-  -- Toggle focus between chat input and original buffer with Ctrl+\
+  -- Close chat with Ctrl+\
   vim.keymap.set({ "i", "n" }, "<C-\\>", function()
-    if self.on_get_original_win then
-      local orig_win = self.on_get_original_win()
-      if orig_win and api.nvim_win_is_valid(orig_win) then
-        api.nvim_set_current_win(orig_win)
-      end
-    end
+    self:close()
   end, input_opts)
 
   -- Page scroll with Ctrl+u/d
@@ -379,14 +374,9 @@ function ChatUI:open()
     end
   end, main_opts)
 
-  -- Toggle focus from main buffer to original buffer with Ctrl+\
+  -- Close chat with Ctrl+\
   vim.keymap.set({ "i", "n" }, "<C-\\>", function()
-    if self.on_get_original_win then
-      local orig_win = self.on_get_original_win()
-      if orig_win and api.nvim_win_is_valid(orig_win) then
-        api.nvim_set_current_win(orig_win)
-      end
-    end
+    self:close()
   end, main_opts)
 
   -- Disable other completion plugins for this buffer

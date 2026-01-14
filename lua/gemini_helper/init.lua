@@ -229,12 +229,16 @@ function M.register_commands()
   vim.keymap.set("v", "<leader>gc", ":'<,'>GeminiChat<CR>", { desc = "Open Gemini chat with selection" })
   vim.keymap.set("v", "<leader>g/", ":'<,'>GeminiBangCommands<CR>", { desc = "Gemini bang commands with selection" })
 
-  -- Global toggle between chat and buffer with Ctrl+\
+  -- Global toggle chat with Ctrl+\
   vim.keymap.set({ "n", "i" }, "<C-\\>", function()
     if state.chat and state.chat:is_open() then
+      -- Chat is open, will be handled by chat's own keymap
       state.chat:focus_input()
+    else
+      -- Chat is not open, open it
+      M.open_chat()
     end
-  end, { desc = "Focus Gemini chat" })
+  end, { desc = "Toggle Gemini chat" })
 end
 
 ---Open chat window

@@ -115,7 +115,7 @@ use {
 | `<leader>gs` | Show settings |
 | `<leader>g/` | Show bang commands |
 | `<leader>gc` (visual) | Open chat with selection |
-| `<C-\>` | Toggle focus between chat and buffer |
+| `<C-\>` | Toggle chat window (open/close) |
 
 ### In Chat Window
 
@@ -130,7 +130,7 @@ use {
 | `?` | Open settings modal (at line 1) |
 | `<C-u>` | Scroll response area up (half page) |
 | `<C-d>` | Scroll response area down (half page) |
-| `<C-\>` | Switch to original buffer |
+| `<C-\>` | Close chat |
 | `<C-c>` | Stop generation |
 | `<C-q>` | Close (insert mode) |
 | `q` or `<Esc>` | Close (normal mode) |
