@@ -11,6 +11,7 @@ M.defaults = {
   -- API settings
   google_api_key = "",
   model = "gemini-3-flash-preview",
+  api_plan = "paid",  -- "paid" or "free"
 
   -- Workspace settings
   workspace = vim.fn.getcwd(),
@@ -337,6 +338,26 @@ function SettingsManager:get_verified_cli_providers()
     table.insert(providers, "codex-cli")
   end
   return providers
+end
+
+-- ============================================================================
+-- API Plan Settings
+-- ============================================================================
+
+---Get current API plan
+---@param self SettingsManager
+---@return string "paid" or "free"
+function SettingsManager:get_api_plan()
+  return self.settings.api_plan or "paid"
+end
+
+---Set API plan
+---@param self SettingsManager
+---@param plan string "paid" or "free"
+function SettingsManager:set_api_plan(plan)
+  if plan == "paid" or plan == "free" then
+    self.settings.api_plan = plan
+  end
 end
 
 return M

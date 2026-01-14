@@ -100,6 +100,7 @@ use {
 | `:GeminiBangCommands` | Bangコマンドピッカーを表示 |
 | `:GeminiAddBangCommand <名前> <テンプレート>` | Bangコマンドを追加 |
 | `:GeminiDebug` | デバッグモードを切り替え |
+| `:GeminiSetApiPlan <paid\|free>` | APIプランを設定（利用可能モデルに影響） |
 | `:GeminiVerifyGeminiCli` | Gemini CLIのインストールを検証 |
 | `:GeminiVerifyClaudeCli` | Claude CLIのインストールを検証 |
 | `:GeminiVerifyCodexCli` | Codex CLIのインストールを検証 |
@@ -120,12 +121,15 @@ use {
 
 | キーマップ | 説明 |
 |-----------|------|
-| `<Enter>` | メッセージ送信 / 補完確定 |
-| `<S-Enter>` | 改行を挿入 |
+| `<Enter>` (ノーマル) | メッセージ送信 |
+| `<Enter>` (インサート) | 改行挿入 / 補完確定 |
+| `<C-s>` | メッセージ送信（両モード） |
 | `<Tab>` | 次の補完候補 |
 | `<S-Tab>` | 前の補完候補 |
 | `!` | Bangコマンド補完を開始（1行目の先頭で） |
 | `?` | 設定モーダルを開く（1行目の先頭で） |
+| `<C-u>` | 応答エリアを上にスクロール（半ページ） |
+| `<C-d>` | 応答エリアを下にスクロール（半ページ） |
 | `<C-\>` | 元のバッファに切り替え |
 | `<C-c>` | 生成を停止 |
 | `<C-q>` | 閉じる（インサートモード） |
@@ -143,11 +147,16 @@ use {
 
 1行目の先頭で`?`を押すと設定モーダルが開きます：
 
-1. **モデル選択**: 利用可能なモデルから選択
+1. **モデル選択**: 利用可能なモデルから選択（APIプランに基づく）
 2. **検索設定**:
    - Off（すべてクリア）
    - Web Search（RAGとは排他）
-   - RAGストア設定（カンマ区切りで複数指定可、Web Searchとは排他）
+   - 現在のRAGストア（有効な場合は`[x]`で表示）
+   - RAGストア変更（利用可能なストアから選択または手動入力）
+3. **ツールモード**: モデル/検索設定に応じて自動設定、手動上書き可能
+   - `all`: 全ツール利用可能
+   - `noSearch`: 検索ツール除外（RAGが検索を担当）
+   - `none`: ツールなし（CLIモデル、Web Search、Gemmaモデル）
 
 モーダルで変更した設定はNeovim終了まで保持されます。Web SearchとRAGは排他的です。
 
@@ -157,6 +166,7 @@ use {
 require("gemini_helper").setup({
   -- API設定
   api_key = "",  -- Google AI APIキー（必須）
+  api_plan = "paid",  -- "paid" または "free"（利用可能なモデルに影響）
   model = "gemini-3-flash-preview",  -- 使用するモデル
 
   -- ワークスペース
@@ -186,6 +196,18 @@ require("gemini_helper").setup({
   debug_mode = false,
 })
 ```
+
+## ツールモード
+
+プラグインは設定に応じて利用可能なツールを自動調整します：
+
+| モード | 利用可能なツール | 有効になる条件 |
+|--------|----------------|---------------|
+| `all` | 全ツール（read + write許可時はwrite） | デフォルト |
+| `noSearch` | search_notes, list_notes, list_folders を除外 | RAG有効時（RAGが検索を担当） |
+| `off` | ツールなし | CLIモデル、Web Search、Gemmaモデル使用時 |
+
+設定バーに現在のツールモードが表示されます：`Tools:all`、`Tools:noSearch`、`Tools:off`
 
 ## 利用可能なツール
 
@@ -350,13 +372,24 @@ AIの応答...
 
 ## 利用可能なモデル
 
-### APIモデル
+### Paid プランモデル
 
 | モデル | 説明 |
 |--------|------|
 | `gemini-3-flash-preview` | 最新の高速モデル、1Mコンテキスト（デフォルト、推奨） |
 | `gemini-3-pro-preview` | 最新のフラッグシップモデル、1Mコンテキスト、最高性能 |
 | `gemini-2.5-flash-lite` | 軽量フラッシュモデル |
+
+### Free プランモデル
+
+| モデル | 説明 |
+|--------|------|
+| `gemini-2.5-flash` | 無料枠の高速モデル |
+| `gemini-2.5-flash-lite` | 無料枠の軽量モデル |
+| `gemini-3-flash-preview` | 無料枠のプレビューモデル |
+| `gemma-3-27b-it` | Gemma 3 27B（Function Calling非対応） |
+| `gemma-3-12b-it` | Gemma 3 12B（Function Calling非対応） |
+| `gemma-3-4b-it` | Gemma 3 4B（Function Calling非対応） |
 
 ### CLIモデル
 

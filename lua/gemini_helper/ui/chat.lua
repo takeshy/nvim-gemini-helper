@@ -56,6 +56,7 @@ function M.new(opts)
   self.on_get_files = opts.on_get_files  -- Callback to get file list
   self.on_get_default_settings = opts.on_get_default_settings  -- Callback to get default settings
   self.on_get_original_win = opts.on_get_original_win  -- Callback to get original window
+  self.on_fetch_rag_stores = opts.on_fetch_rag_stores  -- Callback to fetch RAG stores
   self.available_models = opts.available_models or {}  -- Available model options
   self.pending_settings = nil  -- Temporary settings override { model?, search_setting? }
   self.is_streaming = false
@@ -124,7 +125,7 @@ function ChatUI:calculate_dimensions()
     row = row + height - input_height - settings_height - 2,
     style = "minimal",
     border = "rounded",
-    title = " Enter: send | S-Enter: newline | ?: settings | q: close ",
+    title = " [N] Enter: send | [I] C-s: send | ?: settings | q: close ",
     title_pos = "center",
   }
 
@@ -231,9 +232,7 @@ function ChatUI:open()
   -- Set keymaps for input buffer
   local input_opts = { noremap = true, silent = true, buffer = self.input_buf }
 
-  -- Send with Enter (both insert and normal mode)
-  -- But if popup menu is visible, use Enter to select completion
-  -- Also handle partial command completion
+  -- Insert mode Enter: handle completion popup and bang commands, otherwise newline
   vim.keymap.set("i", "<CR>", function()
     if vim.fn.pumvisible() == 1 then
       -- Check if an item is already selected
@@ -284,13 +283,11 @@ function ChatUI:open()
       end
     end
 
-    -- Send message (deferred)
-    vim.schedule(function()
-      self:send_message()
-    end)
-    return ""
+    -- Default: insert newline
+    return vim.api.nvim_replace_termcodes("<CR>", true, false, true)
   end, { noremap = true, silent = true, buffer = self.input_buf, expr = true })
 
+  -- Normal mode Enter: send message
   vim.keymap.set("n", "<CR>", function()
     self:send_message()
   end, input_opts)
@@ -313,12 +310,7 @@ function ChatUI:open()
     end
   end, { noremap = true, silent = true, buffer = self.input_buf, expr = true })
 
-  -- Shift+Enter for newline in insert mode
-  vim.keymap.set("i", "<S-CR>", function()
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "n", false)
-  end, input_opts)
-
-  -- Ctrl+s also sends (alternative)
+  -- Ctrl+s also sends (alternative for insert mode)
   vim.keymap.set({ "i", "n" }, "<C-s>", function()
     self:send_message()
   end, input_opts)
@@ -350,6 +342,23 @@ function ChatUI:open()
       if orig_win and api.nvim_win_is_valid(orig_win) then
         api.nvim_set_current_win(orig_win)
       end
+    end
+  end, input_opts)
+
+  -- Page scroll with Ctrl+u/d
+  vim.keymap.set({ "i", "n" }, "<C-u>", function()
+    if self.main_win and api.nvim_win_is_valid(self.main_win) then
+      local win_height = api.nvim_win_get_height(self.main_win)
+      local scroll_amount = math.floor(win_height / 2)
+      vim.fn.win_execute(self.main_win, "normal! " .. scroll_amount .. "k")
+    end
+  end, input_opts)
+
+  vim.keymap.set({ "i", "n" }, "<C-d>", function()
+    if self.main_win and api.nvim_win_is_valid(self.main_win) then
+      local win_height = api.nvim_win_get_height(self.main_win)
+      local scroll_amount = math.floor(win_height / 2)
+      vim.fn.win_execute(self.main_win, "normal! " .. scroll_amount .. "j")
     end
   end, input_opts)
 
@@ -527,8 +536,16 @@ function ChatUI:send_message()
 
   -- Call send handler with pending settings (keep settings for next message)
   if self.on_send then
-    self.on_send(message, self.pending_settings)
+    -- Copy pending_settings to avoid mutation issues
+    local settings_copy = nil
+    if self.pending_settings then
+      settings_copy = vim.deepcopy(self.pending_settings)
+    end
+    self.on_send(message, settings_copy)
   end
+
+  -- Re-render settings bar to confirm settings are still active
+  self:render_settings_bar()
 end
 
 ---Add a message to the chat
@@ -675,8 +692,23 @@ function ChatUI:get_model_display_name()
     return "Gemini CLI"
   end
 
-  -- API models - use provided model_name or derive from model
-  return self.model_name or "Gemini"
+  -- API models - find display name from available_models
+  for _, model_info in ipairs(self.available_models or {}) do
+    if type(model_info) == "table" and model_info.name == model then
+      return model_info.display_name or model_info.name
+    end
+  end
+
+  -- Fallback: format model name nicely
+  if model then
+    -- "gemini-3-flash-preview" -> "Gemini 3 Flash"
+    local name = model:gsub("^gemini%-", "Gemini "):gsub("%-preview$", ""):gsub("%-", " ")
+    return name:gsub("(%a)([%w]*)", function(first, rest)
+      return first:upper() .. rest
+    end)
+  end
+
+  return "Gemini"
 end
 
 ---Render the chat
@@ -910,6 +942,7 @@ function ChatUI:get_effective_settings()
   return {
     model = (self.pending_settings and self.pending_settings.model) or defaults.model or "gemini-3-flash-preview",
     search_setting = search_setting,  -- array or nil
+    tool_mode = self.pending_settings and self.pending_settings.tool_mode,  -- nil = auto, or "all", "noSearch", "none"
   }
 end
 
@@ -926,6 +959,9 @@ function ChatUI:render_settings_bar()
   local model_short = settings.model
   if model_short:match("^gemini%-") then
     model_short = model_short:gsub("gemini%-", ""):gsub("%-preview", "")
+  elseif model_short:match("^gemma%-") then
+    -- Gemma models: show as "gemma-3-27b" etc
+    model_short = model_short:gsub("%-it$", "")
   elseif model_short:match("%-cli$") then
     -- CLI models: show as "CLI:claude", "CLI:gemini", "CLI:codex"
     model_short = "CLI:" .. model_short:gsub("%-cli$", "")
@@ -933,14 +969,14 @@ function ChatUI:render_settings_bar()
 
   -- Build search text from array
   local search_text = "Off"
+  local has_web = false
+  local rag_count = 0
 
   -- CLI models don't support search
   if settings.model and settings.model:match("%-cli$") then
     search_text = "-"
   elseif settings.search_setting and #settings.search_setting > 0 then
     local parts = {}
-    local has_web = false
-    local rag_count = 0
     for _, s in ipairs(settings.search_setting) do
       if s == "__websearch__" then
         has_web = true
@@ -953,11 +989,27 @@ function ChatUI:render_settings_bar()
     search_text = table.concat(parts, "+")
   end
 
+  -- Determine tool mode for display
+  local is_cli = settings.model and settings.model:match("%-cli$")
+  local is_gemma = settings.model and settings.model:match("^gemma%-")
+  local is_25flash_rag = settings.model == "gemini-2.5-flash" and rag_count > 0
+  local tool_mode
+  -- Use manual override if set, otherwise auto-determine
+  if settings.tool_mode then
+    tool_mode = settings.tool_mode == "none" and "off" or settings.tool_mode
+  elseif is_cli or is_gemma or has_web or is_25flash_rag then
+    tool_mode = "off"
+  elseif rag_count > 0 then
+    tool_mode = "noSearch"
+  else
+    tool_mode = "all"
+  end
+
   -- Check if there are pending overrides
-  local has_override = self.pending_settings and (self.pending_settings.model or self.pending_settings.search_setting)
+  local has_override = self.pending_settings and (self.pending_settings.model or self.pending_settings.search_setting or self.pending_settings.tool_mode)
   local override_marker = has_override and "*" or ""
 
-  local text = string.format(" Model: %s | Search: %s %s", model_short, search_text, override_marker)
+  local text = string.format(" %s | Search:%s | Tools:%s %s", model_short, search_text, tool_mode, override_marker)
 
   api.nvim_buf_set_option(self.settings_buf, "modifiable", true)
   api.nvim_buf_set_lines(self.settings_buf, 0, -1, false, { text })
@@ -967,13 +1019,20 @@ end
 ---Show settings modal for editing
 ---@param self ChatUI
 function ChatUI:show_settings_modal()
+  -- Debug: show current pending_settings
+  if self.debug_settings then
+    vim.notify("pending_settings: " .. vim.inspect(self.pending_settings), vim.log.levels.DEBUG)
+  end
+
   local settings = self:get_effective_settings()
 
-  -- Build model options
+  -- Build model options (available_models is now array of model info tables)
   local model_items = {}
-  for i, model in ipairs(self.available_models) do
-    local prefix = model == settings.model and "[x] " or "[ ] "
-    table.insert(model_items, { idx = i, display = prefix .. model, value = model })
+  for i, model_info in ipairs(self.available_models) do
+    local name = type(model_info) == "table" and model_info.name or model_info
+    local display_name = type(model_info) == "table" and model_info.display_name or name
+    local prefix = name == settings.model and "[x] " or "[ ] "
+    table.insert(model_items, { idx = i, display = prefix .. display_name, value = name })
   end
 
   -- First: select model
@@ -983,7 +1042,10 @@ function ChatUI:show_settings_modal()
   }, function(model_selected)
     if model_selected then
       self.pending_settings = self.pending_settings or {}
-      self.pending_settings.model = model_selected.value
+      if self.pending_settings.model ~= model_selected.value then
+        self.pending_settings.model = model_selected.value
+        vim.notify("Model: " .. model_selected.value, vim.log.levels.INFO)
+      end
     end
 
     -- Get the selected model (or current if not changed)
@@ -991,9 +1053,10 @@ function ChatUI:show_settings_modal()
 
     -- CLI models don't support Web Search or RAG - skip search settings dialog
     if selected_model and selected_model:match("%-cli$") then
-      -- Clear any search settings for CLI models
+      -- Clear any search settings and set tool_mode to none for CLI models
       self.pending_settings = self.pending_settings or {}
       self.pending_settings.search_setting = {}
+      self.pending_settings.tool_mode = "none"
 
       -- Update settings bar and return focus
       self:render_settings_bar()
@@ -1008,13 +1071,22 @@ function ChatUI:show_settings_modal()
     local current_search = settings.search_setting or {}
     local has_web = vim.tbl_contains(current_search, "__websearch__")
     local rag_stores = vim.tbl_filter(function(s) return s ~= "__websearch__" end, current_search)
+    local has_rag = #rag_stores > 0
 
     -- Build search options (mutually exclusive: Web Search OR RAG stores)
     local search_items = {
-      { display = "Off (clear all)", value = "off" },
+      { display = (not has_web and not has_rag) and "[x] Off" or "[ ] Off", value = "off" },
       { display = has_web and "[x] Web Search" or "[ ] Web Search", value = "web" },
-      { display = "Set RAG store...", value = "add_rag" },
     }
+
+    -- Show current RAG stores if enabled
+    if has_rag then
+      local rag_display = "[x] RAG: " .. table.concat(rag_stores, ", ")
+      table.insert(search_items, { display = rag_display, value = "keep_rag", stores = rag_stores })
+    end
+
+    -- Always show option to change RAG
+    table.insert(search_items, { display = "    Change RAG store...", value = "add_rag" })
 
     vim.ui.select(search_items, {
       prompt = "Search settings (Web/RAG are exclusive):",
@@ -1025,58 +1097,251 @@ function ChatUI:show_settings_modal()
 
         if search_selected.value == "off" then
           self.pending_settings.search_setting = {}
+          vim.notify("Search: Off", vim.log.levels.INFO)
         elseif search_selected.value == "web" then
           -- Toggle web search (clears RAG stores)
           if has_web then
             -- Turn off web search
             self.pending_settings.search_setting = {}
+            vim.notify("Web Search: Off", vim.log.levels.INFO)
           else
             -- Turn on web search (exclusive - clears RAG)
             self.pending_settings.search_setting = { "__websearch__" }
+            vim.notify("Web Search: On", vim.log.levels.INFO)
           end
+        elseif search_selected.value == "keep_rag" then
+          -- Keep current RAG stores
+          self.pending_settings.search_setting = search_selected.stores
+          vim.notify("RAG: " .. table.concat(search_selected.stores, ", "), vim.log.levels.INFO)
         elseif search_selected.value == "add_rag" then
-          -- Prompt for RAG store names (comma-separated, clears web search)
-          local current_rag = table.concat(rag_stores, ", ")
-          vim.ui.input({
-            prompt = "RAG stores (comma-separated): ",
-            default = current_rag,
-          }, function(input)
-            if input and input ~= "" then
-              -- Parse comma-separated store names
-              local stores = {}
-              for store in input:gmatch("[^,]+") do
-                local trimmed = store:match("^%s*(.-)%s*$")
-                if trimmed and trimmed ~= "" then
-                  table.insert(stores, trimmed)
-                end
-              end
-              if #stores > 0 then
-                -- RAG is exclusive - clears web search
-                self.pending_settings = self.pending_settings or {}
-                self.pending_settings.search_setting = stores
-                self:render_settings_bar()
-              end
-            end
-
-            -- Return focus to input
-            if self.input_win and api.nvim_win_is_valid(self.input_win) then
-              api.nvim_set_current_win(self.input_win)
-              vim.cmd("startinsert")
-            end
-          end)
-          return  -- Don't continue, input callback will handle focus
+          -- Fetch RAG stores and show selection dialog
+          self:show_rag_store_selection(rag_stores)
+          return  -- Don't continue, callback will handle flow
         end
       end
 
-      -- Update settings bar
-      self:render_settings_bar()
+      -- Auto-update tool_mode based on new settings
+      self:update_tool_mode_to_default()
 
-      -- Return focus to input
-      if self.input_win and api.nvim_win_is_valid(self.input_win) then
-        api.nvim_set_current_win(self.input_win)
-        vim.cmd("startinsert")
-      end
+      -- Update settings bar and continue to tool mode selection
+      self:render_settings_bar()
+      self:show_tool_mode_selection()
     end)
+  end)
+end
+
+---Show RAG store selection dialog
+---@param self ChatUI
+---@param current_stores string[]  Currently selected store names
+function ChatUI:show_rag_store_selection(current_stores)
+  -- Show loading message
+  vim.notify("Fetching RAG stores...", vim.log.levels.INFO)
+
+  if not self.on_fetch_rag_stores then
+    -- Fallback to manual input
+    self:show_rag_store_manual_input(current_stores)
+    return
+  end
+
+  self.on_fetch_rag_stores(function(stores, err)
+    if err then
+      vim.notify("Failed to fetch stores: " .. err, vim.log.levels.WARN)
+      -- Fallback to manual input
+      self:show_rag_store_manual_input(current_stores)
+      return
+    end
+
+    if not stores or #stores == 0 then
+      vim.notify("No RAG stores found. Use ragujuary to create one.", vim.log.levels.INFO)
+      -- Fallback to manual input
+      self:show_rag_store_manual_input(current_stores)
+      return
+    end
+
+    -- Build selection items with checkmarks for currently selected
+    local items = {}
+    for _, store in ipairs(stores) do
+      local store_name = store.name:gsub("^fileSearchStores/", "")
+      local is_selected = vim.tbl_contains(current_stores, store_name)
+      local prefix = is_selected and "[x] " or "[ ] "
+      table.insert(items, {
+        display = prefix .. store.display_name,
+        value = store_name,
+        selected = is_selected,
+      })
+    end
+    -- Add manual input option
+    table.insert(items, { display = ">> Enter manually...", value = "__manual__" })
+
+    vim.ui.select(items, {
+      prompt = "Select RAG store:",
+      format_item = function(item) return item.display end,
+    }, function(selected)
+      if selected then
+        if selected.value == "__manual__" then
+          self:show_rag_store_manual_input(current_stores)
+          return
+        end
+
+        -- Toggle selection or set single store
+        self.pending_settings = self.pending_settings or {}
+        if selected.selected then
+          -- Remove from selection
+          local new_stores = vim.tbl_filter(function(s)
+            return s ~= selected.value
+          end, current_stores)
+          self.pending_settings.search_setting = new_stores
+          vim.notify("RAG: " .. (next(new_stores) and table.concat(new_stores, ", ") or "Off"), vim.log.levels.INFO)
+        else
+          -- Add to selection (replace for now, could be multi-select)
+          self.pending_settings.search_setting = { selected.value }
+          vim.notify("RAG: " .. selected.value, vim.log.levels.INFO)
+        end
+        -- Auto-update tool_mode based on new settings
+        self:update_tool_mode_to_default()
+        self:render_settings_bar()
+      end
+
+      -- Continue to tool mode selection
+      self:show_tool_mode_selection()
+    end)
+  end)
+end
+
+---Show manual RAG store input dialog
+---@param self ChatUI
+---@param current_stores string[]
+function ChatUI:show_rag_store_manual_input(current_stores)
+  local current_rag = table.concat(current_stores, ", ")
+  vim.ui.input({
+    prompt = "RAG stores (comma-separated): ",
+    default = current_rag,
+  }, function(input)
+    if input and input ~= "" then
+      -- Parse comma-separated store names
+      local stores = {}
+      for store in input:gmatch("[^,]+") do
+        local trimmed = store:match("^%s*(.-)%s*$")
+        if trimmed and trimmed ~= "" then
+          table.insert(stores, trimmed)
+        end
+      end
+      if #stores > 0 then
+        -- RAG is exclusive - clears web search
+        self.pending_settings = self.pending_settings or {}
+        self.pending_settings.search_setting = stores
+        vim.notify("RAG: " .. table.concat(stores, ", "), vim.log.levels.INFO)
+        -- Auto-update tool_mode based on new settings
+        self:update_tool_mode_to_default()
+        self:render_settings_bar()
+      end
+    end
+
+    -- Continue to tool mode selection
+    self:show_tool_mode_selection()
+  end)
+end
+
+---Calculate default tool mode based on current settings
+---@param self ChatUI
+---@return string "all" | "noSearch" | "none"
+function ChatUI:calculate_default_tool_mode()
+  local settings = self:get_effective_settings()
+  local model = settings.model or ""
+  local search_setting = settings.search_setting or {}
+
+  -- CLI models: no tools
+  if model:match("%-cli$") then
+    return "none"
+  end
+
+  -- Gemma models: no function calling
+  if model:match("^gemma%-") then
+    return "none"
+  end
+
+  -- Check search settings
+  local has_web = vim.tbl_contains(search_setting, "__websearch__")
+  local rag_stores = vim.tbl_filter(function(s) return s ~= "__websearch__" end, search_setting)
+  local has_rag = #rag_stores > 0
+
+  -- Web search: no tools
+  if has_web then
+    return "none"
+  end
+
+  -- RAG with gemini-2.5-flash: no tools
+  if has_rag and model == "gemini-2.5-flash" then
+    return "none"
+  end
+
+  -- RAG enabled: exclude search tools
+  if has_rag then
+    return "noSearch"
+  end
+
+  return "all"
+end
+
+---Update tool mode to default based on current model/search settings
+---@param self ChatUI
+function ChatUI:update_tool_mode_to_default()
+  local default_mode = self:calculate_default_tool_mode()
+  self.pending_settings = self.pending_settings or {}
+  self.pending_settings.tool_mode = default_mode
+end
+
+---Show tool mode selection dialog
+---@param self ChatUI
+function ChatUI:show_tool_mode_selection()
+  local settings = self:get_effective_settings()
+
+  -- CLI models and gemma models don't support tools - skip and set to none
+  local selected_model = settings.model
+  if selected_model and (selected_model:match("%-cli$") or selected_model:match("^gemma%-")) then
+    self.pending_settings = self.pending_settings or {}
+    self.pending_settings.tool_mode = "none"
+    self:render_settings_bar()
+    -- Return focus to input
+    if self.input_win and api.nvim_win_is_valid(self.input_win) then
+      api.nvim_set_current_win(self.input_win)
+      vim.cmd("startinsert")
+    end
+    return
+  end
+
+  -- Get current tool mode (use calculated default if not set)
+  local current_tool_mode = settings.tool_mode or self:calculate_default_tool_mode()
+
+  -- Build tool mode options (no Auto)
+  local tool_items = {
+    { display = current_tool_mode == "all" and "[x] all (all tools)" or "[ ] all (all tools)", value = "all" },
+    { display = current_tool_mode == "noSearch" and "[x] noSearch (exclude search)" or "[ ] noSearch (exclude search)", value = "noSearch" },
+    { display = current_tool_mode == "none" and "[x] none (no tools)" or "[ ] none (no tools)", value = "none" },
+  }
+
+  vim.ui.select(tool_items, {
+    prompt = "Tool mode:",
+    format_item = function(item) return item.display end,
+  }, function(tool_selected)
+    if tool_selected then
+      self.pending_settings = self.pending_settings or {}
+      self.pending_settings.tool_mode = tool_selected.value
+      vim.notify("Tools: " .. tool_selected.value, vim.log.levels.INFO)
+    else
+      -- User cancelled - use default
+      self.pending_settings = self.pending_settings or {}
+      self.pending_settings.tool_mode = current_tool_mode
+    end
+
+    -- Update settings bar
+    self:render_settings_bar()
+
+    -- Return focus to input
+    if self.input_win and api.nvim_win_is_valid(self.input_win) then
+      api.nvim_set_current_win(self.input_win)
+      vim.cmd("startinsert")
+    end
   end)
 end
 

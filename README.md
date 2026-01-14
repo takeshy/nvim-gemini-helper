@@ -100,6 +100,7 @@ use {
 | `:GeminiBangCommands` | Show bang command picker |
 | `:GeminiAddBangCommand <name> <template>` | Add a bang command |
 | `:GeminiDebug` | Toggle debug mode |
+| `:GeminiSetApiPlan <paid\|free>` | Set API plan (affects available models) |
 | `:GeminiVerifyGeminiCli` | Verify Gemini CLI installation |
 | `:GeminiVerifyClaudeCli` | Verify Claude CLI installation |
 | `:GeminiVerifyCodexCli` | Verify Codex CLI installation |
@@ -120,12 +121,15 @@ use {
 
 | Keymap | Description |
 |--------|-------------|
-| `<Enter>` | Send message / Confirm completion |
-| `<S-Enter>` | Insert newline |
+| `<Enter>` (normal) | Send message |
+| `<Enter>` (insert) | Insert newline / Confirm completion |
+| `<C-s>` | Send message (insert/normal) |
 | `<Tab>` | Next completion item |
 | `<S-Tab>` | Previous completion item |
 | `!` | Trigger bang command completion (at line 1) |
 | `?` | Open settings modal (at line 1) |
+| `<C-u>` | Scroll response area up (half page) |
+| `<C-d>` | Scroll response area down (half page) |
 | `<C-\>` | Switch to original buffer |
 | `<C-c>` | Stop generation |
 | `<C-q>` | Close (insert mode) |
@@ -143,11 +147,16 @@ use {
 
 Press `?` at the beginning of line 1 to open the settings modal:
 
-1. **Model selection**: Choose from available models
+1. **Model selection**: Choose from available models (based on API plan)
 2. **Search settings**:
    - Off (clear all)
    - Web Search (exclusive with RAG)
-   - Set RAG stores (comma-separated, exclusive with Web Search)
+   - Current RAG store (shown with `[x]` if enabled)
+   - Change RAG store (select from available stores or enter manually)
+3. **Tool mode**: Automatically set based on model/search settings, can be overridden
+   - `all`: All tools available
+   - `noSearch`: Exclude search tools (when RAG handles search)
+   - `none`: No tools (CLI models, Web Search, Gemma models)
 
 Settings changed via modal persist until Neovim exits. Web Search and RAG are mutually exclusive.
 
@@ -157,6 +166,7 @@ Settings changed via modal persist until Neovim exits. Web Search and RAG are mu
 require("gemini_helper").setup({
   -- API Settings
   api_key = "",  -- Google AI API key (required)
+  api_plan = "paid",  -- "paid" or "free" (affects available models)
   model = "gemini-3-flash-preview",  -- Model to use
 
   -- Workspace
@@ -186,6 +196,18 @@ require("gemini_helper").setup({
   debug_mode = false,
 })
 ```
+
+## Tool Modes
+
+The plugin automatically adjusts which tools are available based on your settings:
+
+| Mode | Tools Available | When Active |
+|------|----------------|-------------|
+| `all` | All tools (read + write if allowed) | Default mode |
+| `noSearch` | Excludes search_notes, list_notes, list_folders | When RAG is enabled (RAG handles search) |
+| `off` | No tools | CLI models, Web Search, or Gemma models |
+
+The settings bar shows the current tool mode: `Tools:all`, `Tools:noSearch`, or `Tools:off`.
 
 ## Available Tools
 
@@ -341,13 +363,24 @@ AI response here...
 
 ## Available Models
 
-### API Models
+### Paid Plan Models
 
 | Model | Description |
 |-------|-------------|
 | `gemini-3-flash-preview` | Latest fast model with 1M context (default, recommended) |
 | `gemini-3-pro-preview` | Latest flagship model with 1M context, best performance |
 | `gemini-2.5-flash-lite` | Lightweight flash model |
+
+### Free Plan Models
+
+| Model | Description |
+|-------|-------------|
+| `gemini-2.5-flash` | Free tier fast model |
+| `gemini-2.5-flash-lite` | Free tier lightweight model |
+| `gemini-3-flash-preview` | Free tier preview model |
+| `gemma-3-27b-it` | Gemma 3 27B (no function calling) |
+| `gemma-3-12b-it` | Gemma 3 12B (no function calling) |
+| `gemma-3-4b-it` | Gemma 3 4B (no function calling) |
 
 ### CLI Models
 

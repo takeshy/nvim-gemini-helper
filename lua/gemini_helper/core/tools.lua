@@ -9,6 +9,12 @@ local M = {}
 ---@field parameters table
 ---@field category string
 
+-- Tool modes
+M.TOOL_MODES = { "all", "noSearch", "none" }
+
+-- Search tool names (excluded in noSearch mode)
+M.SEARCH_TOOLS = { "search_notes", "list_notes", "list_folders" }
+
 -- Read operations (always available)
 M.read_note = {
   name = "read_note",
@@ -214,20 +220,30 @@ M.write_to_buffer = {
 }
 
 ---Get enabled tools based on settings
----@param opts table
+---@param opts table { allow_write?: boolean, tool_mode?: string }
 ---@return ToolDefinition[]
 function M.get_enabled_tools(opts)
   opts = opts or {}
   local allow_write = opts.allow_write or false
+  local tool_mode = opts.tool_mode or "all"
+
+  -- none mode: no tools at all
+  if tool_mode == "none" then
+    return {}
+  end
 
   local tools = {}
 
-  -- Always include read tools
+  -- Always include core read tools
   table.insert(tools, M.read_note)
-  table.insert(tools, M.search_notes)
-  table.insert(tools, M.list_notes)
-  table.insert(tools, M.list_folders)
   table.insert(tools, M.get_active_note_info)
+
+  -- Search tools (excluded in noSearch mode)
+  if tool_mode ~= "noSearch" then
+    table.insert(tools, M.search_notes)
+    table.insert(tools, M.list_notes)
+    table.insert(tools, M.list_folders)
+  end
 
   -- Include write tools if allowed
   if allow_write then
@@ -239,6 +255,42 @@ function M.get_enabled_tools(opts)
   end
 
   return tools
+end
+
+---Determine tool mode based on current settings
+---@param opts table { is_cli_model?: boolean, web_search_enabled?: boolean, rag_enabled?: boolean, model?: string }
+---@return string "all" | "noSearch" | "none"
+function M.get_tool_mode(opts)
+  opts = opts or {}
+
+  -- CLI models: no tools (CLI doesn't support function calling)
+  if opts.is_cli_model then
+    return "none"
+  end
+
+  -- Web search: no tools (google_search tool only)
+  if opts.web_search_enabled then
+    return "none"
+  end
+
+  -- gemma models: no function calling support
+  if opts.model then
+    local gemini = require("gemini_helper.core.gemini")
+    if not gemini.supports_function_calling(opts.model) then
+      return "none"
+    end
+  end
+
+  -- RAG enabled: exclude search tools (RAG handles search)
+  -- gemini-2.5-flash with RAG: no tools (doesn't work well with function calling + RAG)
+  if opts.rag_enabled then
+    if opts.model == "gemini-2.5-flash" then
+      return "none"
+    end
+    return "noSearch"
+  end
+
+  return "all"
 end
 
 ---Get tool by name

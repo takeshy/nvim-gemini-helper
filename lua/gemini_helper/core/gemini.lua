@@ -8,27 +8,24 @@ local json = vim.json
 -- API endpoints
 local API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
--- Available models
-M.MODELS = {
-  ["gemini-3-flash-preview"] = "gemini-3-flash-preview",
-  ["gemini-3-pro-preview"] = "gemini-3-pro-preview",
-  ["gemini-2.5-flash-lite"] = "gemini-2.5-flash-lite",
-}
+-- API Plans
+M.API_PLANS = { "paid", "free" }
+M.DEFAULT_API_PLAN = "paid"
 
 -- Default model
 M.DEFAULT_MODEL = "gemini-3-flash-preview"
 
--- Model info for UI
-M.MODEL_INFO = {
+-- Paid tier models
+M.PAID_MODELS = {
   {
     name = "gemini-3-flash-preview",
     display_name = "Gemini 3 Flash Preview",
-    description = "Latest fast model with 1M context, best cost-performance (recommended)",
+    description = "Latest fast model with 1M context (recommended)",
   },
   {
     name = "gemini-3-pro-preview",
     display_name = "Gemini 3 Pro Preview",
-    description = "Latest flagship model with 1M context, best performance",
+    description = "Latest flagship model with 1M context",
   },
   {
     name = "gemini-2.5-flash-lite",
@@ -36,6 +33,75 @@ M.MODEL_INFO = {
     description = "Lightweight flash model",
   },
 }
+
+-- Free tier models
+M.FREE_MODELS = {
+  {
+    name = "gemini-2.5-flash",
+    display_name = "Gemini 2.5 Flash",
+    description = "Free tier fast model",
+  },
+  {
+    name = "gemini-2.5-flash-lite",
+    display_name = "Gemini 2.5 Flash Lite",
+    description = "Free tier lightweight model",
+  },
+  {
+    name = "gemini-3-flash-preview",
+    display_name = "Gemini 3 Flash Preview",
+    description = "Free tier preview model",
+  },
+  {
+    name = "gemma-3-27b-it",
+    display_name = "Gemma 3 27B",
+    description = "Free Gemma model (no function calling)",
+    no_function_calling = true,
+  },
+  {
+    name = "gemma-3-12b-it",
+    display_name = "Gemma 3 12B",
+    description = "Free Gemma model (no function calling)",
+    no_function_calling = true,
+  },
+  {
+    name = "gemma-3-4b-it",
+    display_name = "Gemma 3 4B",
+    description = "Free Gemma model (no function calling)",
+    no_function_calling = true,
+  },
+}
+
+-- Legacy MODEL_INFO for backwards compatibility (defaults to paid)
+M.MODEL_INFO = M.PAID_MODELS
+
+---Get available models based on API plan
+---@param api_plan string "paid" or "free"
+---@return table[]
+function M.get_models_for_plan(api_plan)
+  return api_plan == "free" and M.FREE_MODELS or M.PAID_MODELS
+end
+
+---Check if model is allowed for the given plan
+---@param api_plan string
+---@param model_name string
+---@return boolean
+function M.is_model_allowed_for_plan(api_plan, model_name)
+  local models = M.get_models_for_plan(api_plan)
+  for _, m in ipairs(models) do
+    if m.name == model_name then
+      return true
+    end
+  end
+  return false
+end
+
+---Check if model supports function calling
+---@param model_name string
+---@return boolean
+function M.supports_function_calling(model_name)
+  -- gemma models don't support function calling
+  return not model_name:match("^gemma")
+end
 
 -- CLI Model info (for UI, loaded from cli_provider module)
 M.CLI_MODEL_INFO = {
@@ -373,11 +439,20 @@ function GeminiClient:chat_stream(opts)
                     end
                   end
                 else
-                  -- No candidates in response
+                  -- No candidates in response - check for error message
                   if debug_mode then
                     vim.schedule(function()
-                      print("[DEBUG] No candidates in response: " .. json.encode(parsed):sub(1, 200))
+                      print("[DEBUG] No candidates in response: " .. json.encode(parsed):sub(1, 500))
                     end)
+                  end
+                  -- Check if response contains an error we missed
+                  if parsed.error then
+                    if on_error then
+                      vim.schedule(function()
+                        on_error("API error: " .. (parsed.error.message or json.encode(parsed.error)))
+                      end)
+                    end
+                    return
                   end
                 end
               end
@@ -422,9 +497,50 @@ function GeminiClient:chat_stream(opts)
 
         if result.code ~= 0 then
           if on_error then
-            on_error("curl failed with code " .. result.code .. ": " .. (result.stderr or ""))
+            local error_msg = "curl failed with code " .. result.code
+            if result.code == 28 then
+              error_msg = "Request timed out. If using RAG, check that the store name exists."
+            elseif result.stderr and result.stderr ~= "" then
+              error_msg = error_msg .. ": " .. result.stderr
+            end
+            on_error(error_msg)
           end
           return
+        end
+
+        -- Check if we got any content
+        if accumulated_text == "" and #function_calls == 0 then
+          -- No content received - might be an issue with the request
+          if debug_mode then
+            print("[DEBUG] No content received from API")
+            print("[DEBUG] Remaining buffer: " .. buffer:sub(1, 500))
+            if result.stdout then
+              print("[DEBUG] Full stdout: " .. result.stdout:sub(1, 1000))
+            end
+          end
+
+          -- Check remaining buffer for error
+          if buffer ~= "" then
+            local ok, parsed = pcall(json.decode, buffer)
+            if ok and parsed and parsed.error then
+              if on_error then
+                on_error("API error: " .. (parsed.error.message or json.encode(parsed.error)))
+              end
+              return
+            end
+          end
+
+          -- Check full stdout for error (non-SSE response)
+          if result.stdout and result.stdout ~= "" then
+            -- Try to find JSON error in stdout
+            local ok, parsed = pcall(json.decode, result.stdout)
+            if ok and parsed and parsed.error then
+              if on_error then
+                on_error("API error: " .. (parsed.error.message or json.encode(parsed.error)))
+              end
+              return
+            end
+          end
         end
 
         -- Handle function calls
@@ -649,6 +765,54 @@ function GeminiClient:chat(messages, system_prompt)
   end
 
   return nil, "No response content"
+end
+
+---List available file search stores (RAG stores)
+---@param api_key string
+---@param callback function(stores: table[]|nil, error: string|nil)
+function M.list_file_search_stores(api_key, callback)
+  local url = string.format("%s/fileSearchStores?key=%s", API_BASE, api_key)
+
+  vim.system(
+    { "curl", "-s", "-X", "GET", url },
+    { text = true },
+    function(result)
+      vim.schedule(function()
+        if result.code ~= 0 then
+          callback(nil, "Failed to fetch stores: " .. (result.stderr or "unknown error"))
+          return
+        end
+
+        local ok, parsed = pcall(json.decode, result.stdout or "")
+        if not ok then
+          callback(nil, "Failed to parse response")
+          return
+        end
+
+        if parsed.error then
+          callback(nil, "API error: " .. (parsed.error.message or json.encode(parsed.error)))
+          return
+        end
+
+        -- Extract store names from response
+        local stores = {}
+        if parsed.fileSearchStores then
+          for _, store in ipairs(parsed.fileSearchStores) do
+            -- store.name is like "fileSearchStores/store-name"
+            local name = store.name or ""
+            local display_name = store.displayName or name:gsub("^fileSearchStores/", "")
+            table.insert(stores, {
+              name = name,
+              display_name = display_name,
+              description = store.description or "",
+            })
+          end
+        end
+
+        callback(stores, nil)
+      end)
+    end
+  )
 end
 
 return M

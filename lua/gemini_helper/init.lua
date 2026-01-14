@@ -184,6 +184,24 @@ function M.setup(opts)
     vim.notify("Debug mode: " .. (not current and "ON" or "OFF"), vim.log.levels.INFO)
   end, { desc = "Toggle debug mode" })
 
+  vim.api.nvim_create_user_command("GeminiSetApiPlan", function(cmd_opts)
+    local plan = cmd_opts.args
+    if plan ~= "paid" and plan ~= "free" then
+      vim.notify("Invalid plan. Use 'paid' or 'free'", vim.log.levels.ERROR)
+      return
+    end
+    state.settings:set_api_plan(plan)
+    -- Validate current model is allowed for new plan
+    local current_model = state.settings:get("model")
+    if not gemini.is_model_allowed_for_plan(plan, current_model) then
+      local new_default = gemini.get_models_for_plan(plan)[1].name
+      state.settings:set("model", new_default)
+      vim.notify("Model changed to " .. new_default .. " (previous model not available in " .. plan .. " plan)", vim.log.levels.WARN)
+    end
+    state.settings:save()
+    vim.notify("API plan set to: " .. plan, vim.log.levels.INFO)
+  end, { nargs = 1, desc = "Set API plan (paid or free)" })
+
   -- CLI Provider verification commands
   vim.api.nvim_create_user_command("GeminiVerifyGeminiCli", function()
     M.verify_cli("gemini-cli")
@@ -313,6 +331,14 @@ function M.open_chat(initial_input)
         end
         return nil
       end,
+      on_fetch_rag_stores = function(callback)
+        local api_key = state.settings:get("google_api_key")
+        if not api_key or api_key == "" then
+          callback(nil, "API key not set")
+          return
+        end
+        gemini.list_file_search_stores(api_key, callback)
+      end,
       available_models = M.get_available_models(),
     })
   end
@@ -411,13 +437,27 @@ function M.handle_message(message, opts)
   end
 
 
-  -- Get enabled tools (empty if rag_only mode or web_search mode)
-  local enabled_tools = {}
-  if not state.settings:get("rag_only") and not web_search_enabled then
-    enabled_tools = tools.get_enabled_tools({
-      allow_write = state.settings:get("allow_write"),
+  -- Determine tool mode: use manual override from opts, or auto-determine
+  local current_model = opts.model or state.settings:get("model")
+  local tool_mode
+  if opts.tool_mode then
+    -- Manual override from settings modal
+    tool_mode = opts.tool_mode
+  else
+    -- Auto-determine based on settings
+    tool_mode = tools.get_tool_mode({
+      is_cli_model = false,  -- Already checked above
+      web_search_enabled = web_search_enabled,
+      rag_enabled = #rag_store_names > 0,
+      model = current_model,
     })
   end
+
+  -- Get enabled tools based on tool mode
+  local enabled_tools = tools.get_enabled_tools({
+    allow_write = state.settings:get("allow_write"),
+    tool_mode = tool_mode,
+  })
 
   -- Build messages for API (copy to avoid mutation)
   local messages = {}
@@ -652,11 +692,13 @@ function M.show_settings()
   local search_type = state.settings:get_search_type()
   local bang_commands = state.settings:get_bang_commands()
 
+  local api_plan = state.settings:get_api_plan()
   local lines = {
     "Gemini Helper Settings",
     "======================",
     "",
     string.format("API Key: %s", settings.google_api_key ~= "" and "****" .. settings.google_api_key:sub(-4) or "Not set"),
+    string.format("API Plan: %s", api_plan),
     string.format("Model: %s", settings.model),
     string.format("Workspace: %s", settings.workspace),
     string.format("Allow Write: %s", settings.allow_write and "Yes" or "No"),
@@ -674,6 +716,7 @@ function M.show_settings()
   table.insert(lines, "")
   table.insert(lines, "Commands:")
   table.insert(lines, "  :GeminiSetApiKey <key> - Set API key")
+  table.insert(lines, "  :GeminiSetApiPlan <paid|free> - Set API plan")
   table.insert(lines, "  :GeminiToggleWrite - Toggle write permissions")
   table.insert(lines, "  :GeminiWebSearch - Enable Web Search")
   table.insert(lines, "  :GeminiSearchNone - Disable search")
@@ -917,20 +960,33 @@ function M.verify_cli(provider_type)
   end
 end
 
----Get available models (API + verified CLI)
----@return string[]
+---Get available models (API based on plan + verified CLI)
+---@return table[]  Array of model info tables
 function M.get_available_models()
-  local models = {
-    "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
-    "gemini-2.5-flash-lite",
-  }
+  local models = {}
 
-  -- Add verified CLI providers
+  -- Get API models based on current plan
   if state.settings then
+    local api_plan = state.settings:get_api_plan()
+    for _, model_info in ipairs(gemini.get_models_for_plan(api_plan)) do
+      table.insert(models, model_info)
+    end
+
+    -- Add verified CLI providers
     local verified_cli = state.settings:get_verified_cli_providers()
-    for _, cli_model in ipairs(verified_cli) do
-      table.insert(models, cli_model)
+    for _, cli_name in ipairs(verified_cli) do
+      -- Find CLI model info
+      for _, cli_info in ipairs(gemini.CLI_MODEL_INFO) do
+        if cli_info.name == cli_name then
+          table.insert(models, cli_info)
+          break
+        end
+      end
+    end
+  else
+    -- Fallback to paid models if settings not initialized
+    for _, model_info in ipairs(gemini.PAID_MODELS) do
+      table.insert(models, model_info)
     end
   end
 
