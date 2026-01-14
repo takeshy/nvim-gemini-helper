@@ -370,6 +370,16 @@ function ChatUI:open()
     end
   end, main_opts)
 
+  -- Toggle focus from main buffer to original buffer with Ctrl+\
+  vim.keymap.set({ "i", "n" }, "<C-\\>", function()
+    if self.on_get_original_win then
+      local orig_win = self.on_get_original_win()
+      if orig_win and api.nvim_win_is_valid(orig_win) then
+        api.nvim_set_current_win(orig_win)
+      end
+    end
+  end, main_opts)
+
   -- Disable other completion plugins for this buffer
   vim.api.nvim_buf_set_option(self.input_buf, "omnifunc", "")
   vim.api.nvim_buf_set_option(self.input_buf, "completefunc", "")

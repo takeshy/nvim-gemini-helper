@@ -237,9 +237,13 @@ function M.open_chat(initial_input)
   -- Save the original window and buffer before opening chat
   local current_win = vim.api.nvim_get_current_win()
   local current_buf = vim.api.nvim_get_current_buf()
-  local bufname = vim.api.nvim_buf_get_name(current_buf)
-  -- Only save if it's a real file buffer (not chat window, empty, etc.)
-  if bufname ~= "" and not bufname:match("^gemini_") then
+  -- Only save if not the chat window itself
+  local is_chat_win = state.chat and (
+    current_win == state.chat.input_win or
+    current_win == state.chat.main_win or
+    current_win == state.chat.settings_win
+  )
+  if not is_chat_win then
     state.original_bufnr = current_buf
     state.original_win = current_win
   end
