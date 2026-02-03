@@ -452,6 +452,8 @@ require("gemini_helper").setup({
 
 MCPツールがUIリソース（`ui://`スキーム）を返す場合、プラグインはWebSocket経由の双方向通信でブラウザを開きます。
 
+https://github.com/user-attachments/assets/7b5d6199-3edb-4def-870c-8397551e4518
+
 **アーキテクチャ:**
 ```
 Neovim ↔ WebSocketサーバー ↔ ブリッジHTML ↔ iframe（MCP App）

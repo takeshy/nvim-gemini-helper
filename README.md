@@ -443,6 +443,8 @@ require("gemini_helper").setup({
 
 When an MCP tool returns a UI resource (`ui://` scheme), the plugin can open it in your browser with bidirectional communication via WebSocket.
 
+https://github.com/user-attachments/assets/7b5d6199-3edb-4def-870c-8397551e4518
+
 **Architecture:**
 ```
 Neovim ↔ WebSocket Server ↔ Bridge HTML ↔ iframe (MCP App)
