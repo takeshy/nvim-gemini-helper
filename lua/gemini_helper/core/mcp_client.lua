@@ -223,7 +223,7 @@ function McpClient:initialize()
     capabilities = {},
     clientInfo = {
       name = "nvim-gemini-helper",
-      version = "1.1.0",
+      version = "1.2.0",
     },
   })
 
