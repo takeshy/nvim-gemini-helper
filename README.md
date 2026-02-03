@@ -2,7 +2,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/takeshy/nvim-gemini-helper)
 
-Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port of the Obsidian Gemini Helper plugin.
+Neovim plugin for Google Gemini AI with File Search RAG capabilities. Supports MCP (Model Context Protocol) servers and MCP Apps with interactive browser UI.
 
 ![Gemini Helper Screenshot](gemini_helper.png)
 
@@ -525,4 +525,4 @@ MIT
 
 ## Credits
 
-Based on [obsidian-gemini-helper](https://github.com/your-username/obsidian-gemini-helper).
+Originally inspired by [obsidian-gemini-helper](https://github.com/takeshy/obsidian-gemini-helper).

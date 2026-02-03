@@ -2,7 +2,7 @@
 
 [![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/takeshy/nvim-gemini-helper)
 
-Google Gemini AIをNeovimで使うためのプラグインです。RAG（File Search）機能も搭載しています。Obsidian Gemini HelperプラグインのLua移植版です。
+Google Gemini AIをNeovimで使うためのプラグインです。RAG（File Search）機能、MCP（Model Context Protocol）サーバー接続、MCP Appsによるブラウザでのインタラクティブ UI に対応しています。
 
 ![Gemini Helper スクリーンショット](gemini_helper.png)
 
@@ -560,4 +560,4 @@ MIT
 
 ## クレジット
 
-[obsidian-gemini-helper](https://github.com/your-username/obsidian-gemini-helper) をベースにしています。
+[obsidian-gemini-helper](https://github.com/takeshy/obsidian-gemini-helper) からインスピレーションを得ています。
