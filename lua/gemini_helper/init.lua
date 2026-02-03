@@ -1325,22 +1325,31 @@ function M.open_mcp_app(app_index)
     {
       on_message = function(msg, ws_client)
         vim.schedule(function()
-          if msg.type == "tool_call" then
-            -- Handle tool call from MCP App
-            local tool_name = msg.name
-            local tool_args = msg.args or {}
+          -- Handle JSON-RPC 2.0 messages
+          if msg.jsonrpc ~= "2.0" then
+            return
+          end
+
+          -- Handle tools/call request
+          if msg.method == "tools/call" and msg.id ~= nil then
+            local params = msg.params or {}
+            local tool_name = params.name
+            local tool_args = params.arguments or {}
             local request_id = msg.id
 
             -- Initialize client if not done
             if not client_initialized then
               local _, init_err = mcp_client_for_app:initialize()
               if init_err then
-                -- Send error response
+                -- Send JSON-RPC error response
                 if bridge then
                   bridge:send(ws_client, {
-                    type = "tool_response",
+                    jsonrpc = "2.0",
                     id = request_id,
-                    error = "Failed to initialize MCP client: " .. init_err,
+                    error = {
+                      code = -32603,
+                      message = "Failed to initialize MCP client: " .. init_err,
+                    },
                   })
                 end
                 return
@@ -1352,32 +1361,34 @@ function M.open_mcp_app(app_index)
             local result, call_err = mcp_client_for_app:call_tool(tool_name, tool_args)
 
             if call_err then
-              -- Send error response
+              -- Send JSON-RPC error response
               if bridge then
                 bridge:send(ws_client, {
-                  type = "tool_response",
+                  jsonrpc = "2.0",
                   id = request_id,
-                  error = call_err,
+                  error = {
+                    code = -32000,
+                    message = call_err,
+                  },
                 })
               end
             else
-              -- Send success response
+              -- Send JSON-RPC success response
               if bridge then
                 bridge:send(ws_client, {
-                  type = "tool_response",
+                  jsonrpc = "2.0",
                   id = request_id,
                   result = result,
                 })
               end
             end
+            return
+          end
 
-          elseif msg.type == "bridge_ready" then
-            vim.notify("MCP App bridge connected", vim.log.levels.INFO)
-
-          elseif msg.type == "from_app" then
-            -- Handle other messages from MCP App
+          -- Handle JSON-RPC notifications (no id)
+          if msg.method and msg.id == nil then
             if state.settings:get("debug_mode") then
-              vim.notify("MCP App message: " .. vim.inspect(msg.data), vim.log.levels.DEBUG)
+              vim.notify("MCP App notification: " .. msg.method, vim.log.levels.DEBUG)
             end
           end
         end)

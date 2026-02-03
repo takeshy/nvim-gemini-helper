@@ -272,9 +272,15 @@ function McpClient:call_tool(tool_name, args)
     end
   end
 
+  -- Use vim.empty_dict() to ensure empty args is encoded as {} not []
+  local arguments = args
+  if arguments == nil or (type(arguments) == "table" and next(arguments) == nil) then
+    arguments = vim.empty_dict()
+  end
+
   local result, err = self:send_request("tools/call", {
     name = tool_name,
-    arguments = args or {},
+    arguments = arguments,
   })
 
   if err then

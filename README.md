@@ -10,6 +10,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. A Lua port
 
 - **Streaming Chat Interface**: Real-time response streaming with Gemini API
 - **CLI Provider Support**: Use Gemini CLI, Claude CLI, or Codex CLI as alternative backends
+- **MCP Support**: Connect to MCP servers for external tools with MCP Apps browser UI support (JSON-RPC 2.0)
 - **Function Calling**: AI can directly execute workspace operations (9 tools)
 - **Multiple Model Support**: Gemini 3 Flash/Pro Preview, 2.5 Flash Lite, and CLI models
 - **Web Search**: Search the web for up-to-date information using Google Search
@@ -104,6 +105,14 @@ use {
 | `:GeminiVerifyGeminiCli` | Verify Gemini CLI installation |
 | `:GeminiVerifyClaudeCli` | Verify Claude CLI installation |
 | `:GeminiVerifyCodexCli` | Verify Codex CLI installation |
+| `:GeminiMcpAdd <name> <url>` | Add MCP server |
+| `:GeminiMcpRemove <name>` | Remove MCP server |
+| `:GeminiMcpToggle <name>` | Toggle MCP server |
+| `:GeminiMcpList` | List MCP servers |
+| `:GeminiMcpTest [name]` | Test MCP server connection |
+| `:GeminiMcpAppOpen` | Open MCP App in browser |
+| `:GeminiMcpAppClose` | Close MCP App bridge |
+| `:GeminiMcpAppAutoOpen` | Toggle auto-open for MCP Apps |
 
 ## Default Keymaps
 
@@ -391,6 +400,92 @@ CLI models require the respective CLI tool to be installed and verified.
 | `gemini-cli` | Google Gemini via command line (requires Google account) |
 | `claude-cli` | Anthropic Claude via command line (requires Anthropic account) |
 | `codex-cli` | OpenAI Codex via command line (requires OpenAI account) |
+
+## MCP (Model Context Protocol) Support
+
+Connect to MCP servers to extend AI capabilities with external tools. MCP Apps with interactive UI are supported via a WebSocket/HTTP bridge that opens in your browser.
+
+### MCP Server Configuration
+
+Add MCP servers via command:
+```vim
+:GeminiMcpAdd local http://localhost:8080/mcp
+```
+
+Or via setup:
+```lua
+require("gemini_helper").setup({
+  mcp_servers = {
+    {
+      name = "local",
+      url = "http://localhost:8080/mcp",
+      enabled = true,
+    },
+  },
+  auto_open_mcp_app = true,  -- Auto-open browser for UI-returning tools
+})
+```
+
+### MCP Commands
+
+| Command | Description |
+|---------|-------------|
+| `:GeminiMcpAdd <name> <url>` | Add MCP server and test connection |
+| `:GeminiMcpRemove <name>` | Remove MCP server |
+| `:GeminiMcpToggle <name>` | Enable/disable MCP server |
+| `:GeminiMcpList` | List configured MCP servers |
+| `:GeminiMcpTest [name]` | Test MCP server connection |
+| `:GeminiMcpAppOpen` | Open last MCP App UI in browser |
+| `:GeminiMcpAppClose` | Close MCP App bridge |
+| `:GeminiMcpAppAutoOpen` | Toggle auto-open for MCP Apps |
+
+### MCP Apps (Interactive UI)
+
+When an MCP tool returns a UI resource (`ui://` scheme), the plugin can open it in your browser with bidirectional communication via WebSocket.
+
+**Architecture:**
+```
+Neovim ↔ WebSocket Server ↔ Bridge HTML ↔ iframe (MCP App)
+                              ↑              ↓
+                           postMessage ←────┘
+```
+
+**JSON-RPC 2.0 Protocol:**
+
+The bridge implements the [MCP Apps specification](https://github.com/modelcontextprotocol/ext-apps) using JSON-RPC 2.0:
+
+```javascript
+// Tool call from iframe
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": { "name": "tool-name", "arguments": {} }
+}
+
+// Response from host
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": { "content": [...] }
+}
+```
+
+**MCP App SDK (injected into iframe):**
+```javascript
+// Call a tool
+const result = await window.mcpApps.callTool("tool-name", { arg: "value" });
+
+// Check host capabilities
+const caps = window.mcpApps.getCapabilities();
+```
+
+### How MCP Tools Work
+
+1. During chat, AI discovers tools from enabled MCP servers
+2. AI can call MCP tools like native tools
+3. If a tool returns UI content, it auto-opens in browser (if enabled)
+4. The UI can call back to Neovim for additional tool calls
 
 ## CLI Providers
 

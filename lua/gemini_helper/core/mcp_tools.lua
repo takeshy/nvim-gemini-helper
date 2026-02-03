@@ -369,10 +369,9 @@ function M.create_executor(mcp_tools)
       mcp_app.server_url,
       {
         on_message = opts.on_message or function(msg)
-          if msg.type == "from_app" then
-            vim.notify("MCP App: " .. vim.inspect(msg.data), vim.log.levels.DEBUG)
-          elseif msg.type == "bridge_ready" then
-            vim.notify("MCP App bridge connected", vim.log.levels.INFO)
+          -- Default handler - JSON-RPC messages are handled by the caller
+          if msg.jsonrpc == "2.0" and msg.method then
+            vim.notify("MCP App request: " .. msg.method, vim.log.levels.DEBUG)
           end
         end,
       }

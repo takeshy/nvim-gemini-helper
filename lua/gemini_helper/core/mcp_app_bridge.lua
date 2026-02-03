@@ -358,60 +358,146 @@ function McpAppBridge:close()
   end
 end
 
--- Script to inject into iframe for mcpApps bridge
+-- Script to inject into iframe for MCP Apps bridge (JSON-RPC 2.0 compliant)
 local IFRAME_BRIDGE_SCRIPT = [[
 <script>
 (function() {
-  // Bridge for MCP App communication with Neovim via parent window
+  // MCP Apps Bridge - JSON-RPC 2.0 over postMessage
+  // Spec: https://github.com/modelcontextprotocol/ext-apps
   let requestId = 0;
   const pendingRequests = new Map();
+  let initialized = false;
+  let hostCapabilities = {};
 
+  // Send JSON-RPC request to host
+  function sendRequest(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++requestId;
+      pendingRequests.set(id, { resolve, reject, method });
+
+      window.parent.postMessage({
+        jsonrpc: '2.0',
+        id: id,
+        method: method,
+        params: params
+      }, '*');
+
+      // Timeout after 30 seconds
+      setTimeout(() => {
+        if (pendingRequests.has(id)) {
+          pendingRequests.delete(id);
+          reject(new Error('Request timeout: ' + method));
+        }
+      }, 30000);
+    });
+  }
+
+  // Send JSON-RPC notification (no response expected)
+  function sendNotification(method, params) {
+    window.parent.postMessage({
+      jsonrpc: '2.0',
+      method: method,
+      params: params
+    }, '*');
+  }
+
+  // MCP Apps SDK interface
   window.mcpApps = {
+    // Call a tool on the MCP server
     callTool: function(name, args) {
-      return new Promise((resolve, reject) => {
-        const id = ++requestId;
-        pendingRequests.set(id, { resolve, reject });
-
-        window.parent.postMessage({
-          type: 'mcp_tool_call',
-          id: id,
-          name: name,
-          args: args || {}
-        }, '*');
-
-        // Timeout after 30 seconds
-        setTimeout(() => {
-          if (pendingRequests.has(id)) {
-            pendingRequests.delete(id);
-            reject(new Error('Tool call timeout'));
-          }
-        }, 30000);
+      if (initialized && hostCapabilities.tools === false) {
+        return Promise.reject(new Error('Host does not support tools'));
+      }
+      return sendRequest('tools/call', {
+        name: name,
+        arguments: args || {}
+      }).then(result => {
+        // Return the CallToolResult content
+        return result;
       });
+    },
+
+    // Update model context (optional)
+    updateModelContext: function(context) {
+      if (!initialized) {
+        return Promise.reject(new Error('MCP Apps not initialized'));
+      }
+      if (!hostCapabilities.updateContext) {
+        return Promise.reject(new Error('Host does not support updateModelContext'));
+      }
+      return sendRequest('ui/update-context', context);
+    },
+
+    // Request to open a link
+    openLink: function(url) {
+      if (!initialized) {
+        return Promise.reject(new Error('MCP Apps not initialized'));
+      }
+      if (!hostCapabilities.openLink) {
+        return Promise.reject(new Error('Host does not support openLink'));
+      }
+      return sendRequest('ui/open-link', { url: url });
+    },
+
+    // Get host capabilities
+    getCapabilities: function() {
+      return hostCapabilities;
+    },
+
+    // Check if initialized
+    isInitialized: function() {
+      return initialized;
     }
   };
 
-  // Listen for responses from parent
+  // Listen for JSON-RPC messages from host
   window.addEventListener('message', function(event) {
-    console.log('[MCP Bridge iframe] Received message:', event.data);
     const msg = event.data;
-    if (msg && msg.type === 'mcp_tool_response' && msg.id) {
-      console.log('[MCP Bridge iframe] Tool response for id:', msg.id);
+    if (!msg || msg.jsonrpc !== '2.0') return;
+
+    // Handle JSON-RPC response
+    if (msg.id !== undefined && msg.id !== null) {
       const pending = pendingRequests.get(msg.id);
       if (pending) {
-        console.log('[MCP Bridge iframe] Found pending request, resolving');
         pendingRequests.delete(msg.id);
         if (msg.error) {
-          pending.reject(new Error(msg.error));
+          pending.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
         } else {
           pending.resolve(msg.result);
         }
-      } else {
-        console.log('[MCP Bridge iframe] No pending request for id:', msg.id);
+      }
+      return;
+    }
+
+    // Handle JSON-RPC notifications from host
+    if (msg.method) {
+      if (msg.method === 'ui/notifications/tool-result') {
+        // Tool result notification - dispatch event for app to handle
+        window.dispatchEvent(new CustomEvent('mcp:tool-result', { detail: msg.params }));
+      } else if (msg.method === 'ui/notifications/tool-input') {
+        // Tool input notification
+        window.dispatchEvent(new CustomEvent('mcp:tool-input', { detail: msg.params }));
       }
     }
   });
 
-  console.log('[MCP Bridge] mcpApps bridge initialized');
+  // Initialize connection with host
+  async function initialize() {
+    try {
+      const result = await sendRequest('ui/initialize', {
+        protocolVersion: '2025-06-18',
+        clientInfo: { name: 'mcp-app-view', version: '1.0.0' }
+      });
+      initialized = true;
+      hostCapabilities = result.hostCapabilities || {};
+      window.dispatchEvent(new CustomEvent('mcp:initialized', { detail: result }));
+    } catch (e) {
+      console.error('[MCP Apps] Initialization failed:', e);
+    }
+  }
+
+  // Auto-initialize
+  initialize();
 })();
 </script>
 ]]
@@ -569,56 +655,103 @@ function M.generate_bridge_html(ui_resource, ws_port, mcp_server_url)
       statusTextEl.textContent = connected ? 'Connected to Neovim' : 'Disconnected';
     }
 
-    // Queue for tool calls that arrive before WebSocket is connected
-    const pendingToolCalls = [];
+    // Queue for requests/notifications that arrive before WebSocket is connected
+    const pendingRequests = [];
 
-    // Listen for messages from iframe
+    // Host capabilities advertised to views
+    const hostCapabilities = {
+      tools: true,
+      openLink: false,
+      updateContext: false
+    };
+
+    function forwardToNeovim(msg) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(msg));
+      } else {
+        // Queue for when connection is ready
+        pendingRequests.push(msg);
+      }
+    }
+
+    // Listen for JSON-RPC messages from iframe
     window.addEventListener('message', (event) => {
       const msg = event.data;
-      if (!msg || !msg.type) return;
+      if (!msg || msg.jsonrpc !== '2.0') return;
 
-      // Handle tool call from iframe
-      if (msg.type === 'mcp_tool_call') {
-        console.log('[Bridge] Tool call from iframe:', msg.name, 'id:', msg.id);
-        console.log('[Bridge] WS state:', ws ? ws.readyState : 'null', '(0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED)');
-        log('out', { type: 'tool_call', name: msg.name, args: msg.args });
+      // Only handle messages with a method
+      if (!msg.method) return;
 
-        // Forward to Neovim via WebSocket
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          console.log('[Bridge] Sending tool call via WebSocket');
-          ws.send(JSON.stringify({
-            type: 'tool_call',
+      const isNotification = (msg.id === undefined || msg.id === null);
+
+      log('out', { method: msg.method, id: msg.id });
+
+      // Handle ui/initialize - respond directly from host
+      if (msg.method === 'ui/initialize') {
+        if (isNotification) return;
+        iframe.contentWindow.postMessage({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            protocolVersion: '2025-06-18',
+            hostInfo: { name: 'nvim-gemini-helper', version: '1.0.0' },
+            hostCapabilities: hostCapabilities
+          }
+        }, '*');
+        return;
+      }
+
+      // Handle tools/call - forward to Neovim
+      if (msg.method === 'tools/call') {
+        forwardToNeovim(msg);
+        return;
+      }
+
+      // Handle ui/open-link - not supported
+      if (msg.method === 'ui/open-link') {
+        if (!isNotification) {
+          iframe.contentWindow.postMessage({
+            jsonrpc: '2.0',
             id: msg.id,
-            name: msg.name,
-            args: msg.args
-          }));
+            error: { code: -32601, message: 'Method not supported: ui/open-link' }
+          }, '*');
         } else {
-          // Queue the tool call for when connection is ready
-          console.log('[Bridge] WebSocket not connected, queueing tool call');
-          pendingToolCalls.push(msg);
+          forwardToNeovim(msg);
         }
         return;
       }
 
-      // Forward other messages to Neovim
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'from_app', data: msg, origin: event.origin }));
-        log('out', msg);
+      // Handle ui/update-context - not supported
+      if (msg.method === 'ui/update-context') {
+        if (!isNotification) {
+          iframe.contentWindow.postMessage({
+            jsonrpc: '2.0',
+            id: msg.id,
+            error: { code: -32601, message: 'Method not supported: ui/update-context' }
+          }, '*');
+        } else {
+          forwardToNeovim(msg);
+        }
+        return;
+      }
+
+      // Unknown method
+      if (!isNotification) {
+        iframe.contentWindow.postMessage({
+          jsonrpc: '2.0',
+          id: msg.id,
+          error: { code: -32601, message: 'Method not found: ' + msg.method }
+        }, '*');
+      } else {
+        forwardToNeovim(msg);
       }
     });
 
-    // Process queued tool calls after connection
-    function processPendingToolCalls() {
-      console.log('[Bridge] Processing', pendingToolCalls.length, 'pending tool calls');
-      while (pendingToolCalls.length > 0) {
-        const msg = pendingToolCalls.shift();
-        console.log('[Bridge] Sending queued tool call:', msg.name, 'id:', msg.id);
-        ws.send(JSON.stringify({
-          type: 'tool_call',
-          id: msg.id,
-          name: msg.name,
-          args: msg.args
-        }));
+    // Process queued requests after connection
+    function processPendingRequests() {
+      while (pendingRequests.length > 0) {
+        const msg = pendingRequests.shift();
+        ws.send(JSON.stringify(msg));
       }
     }
 
@@ -626,51 +759,33 @@ function M.generate_bridge_html(ui_resource, ws_port, mcp_server_url)
     const appContentBase64 = ']] .. vim.base64.encode(modified_app_content) .. [[';
 
     function connect() {
-      console.log('[Bridge] Connecting to WebSocket at ws://127.0.0.1:' + WS_PORT);
       ws = new WebSocket('ws://127.0.0.1:' + WS_PORT);
 
       ws.onopen = () => {
-        console.log('[Bridge] WebSocket connected!');
         setStatus(true);
-        // Notify Neovim that we're ready
-        ws.send(JSON.stringify({ type: 'bridge_ready' }));
-        // Process any queued tool calls
-        processPendingToolCalls();
+        // Process any queued requests
+        processPendingRequests();
       };
 
       ws.onclose = (event) => {
-        console.log('[Bridge] WebSocket closed:', event.code, event.reason);
         setStatus(false);
         // Reconnect after 2 seconds
         reconnectTimer = setTimeout(connect, 2000);
       };
 
       ws.onerror = (event) => {
-        console.log('[Bridge] WebSocket error:', event);
         setStatus(false);
       };
 
       ws.onmessage = (event) => {
-        console.log('[Bridge] WS received:', event.data);
         try {
           const msg = JSON.parse(event.data);
           log('in', msg);
-          console.log('[Bridge] Parsed message type:', msg.type);
 
-          // Handle tool call response from Neovim
-          if (msg.type === 'tool_response') {
-            console.log('[Bridge] Forwarding tool_response to iframe, id:', msg.id);
-            // Forward to iframe
-            iframe.contentWindow.postMessage({
-              type: 'mcp_tool_response',
-              id: msg.id,
-              result: msg.result,
-              error: msg.error
-            }, '*');
-            console.log('[Bridge] postMessage sent to iframe');
-          }
-          // Forward other messages to iframe
-          else if (msg.type === 'to_app') {
+          // Forward JSON-RPC response/notification to iframe
+          if (msg.jsonrpc === '2.0') {
+            iframe.contentWindow.postMessage(msg, '*');
+          } else if (msg.type === 'to_app') {
             iframe.contentWindow.postMessage(msg.data, '*');
           }
         } catch (e) {
