@@ -57,8 +57,9 @@ function M.new(opts)
   self.on_get_default_settings = opts.on_get_default_settings  -- Callback to get default settings
   self.on_get_original_win = opts.on_get_original_win  -- Callback to get original window
   self.on_fetch_rag_stores = opts.on_fetch_rag_stores  -- Callback to fetch RAG stores
+  self.on_get_mcp_servers = opts.on_get_mcp_servers  -- Callback to get MCP servers
   self.available_models = opts.available_models or {}  -- Available model options
-  self.pending_settings = nil  -- Temporary settings override { model?, search_setting? }
+  self.pending_settings = nil  -- Temporary settings override { model?, search_setting?, enabled_mcp_servers? }
   self.is_streaming = false
   self.current_response = ""
   self.status = ""
@@ -611,7 +612,8 @@ end
 ---@param rag_sources string[]|nil
 ---@param web_search_used boolean|nil
 ---@param aborted boolean|nil
-function ChatUI:end_streaming(tools_used, rag_sources, web_search_used, aborted)
+---@param mcp_apps table[]|nil  MCP Apps with UI info
+function ChatUI:end_streaming(tools_used, rag_sources, web_search_used, aborted, mcp_apps)
   self.is_streaming = false
   self.status = ""
   self:stop_spinner()
@@ -631,6 +633,7 @@ function ChatUI:end_streaming(tools_used, rag_sources, web_search_used, aborted)
       tools_used = tools_used,
       rag_sources = rag_sources,
       web_search_used = web_search_used,
+      mcp_apps = mcp_apps,
     })
   elseif aborted then
     -- Show stopped message even if no response yet
@@ -742,6 +745,21 @@ function ChatUI:render()
       local ws_line = #lines
       table.insert(lines, "  [Web Search]")
       table.insert(highlights, { line = ws_line, col = 0, end_col = -1, hl = "GeminiWebSearch" })
+    end
+
+    -- MCP Apps indicator
+    if msg.mcp_apps and #msg.mcp_apps > 0 then
+      for _, app in ipairs(msg.mcp_apps) do
+        local app_line = #lines
+        local app_label = "  [MCP App: "
+        if app.ui_resource then
+          app_label = app_label .. (app.ui_resource.mimeType or "text/html") .. "]"
+        else
+          app_label = app_label .. "UI available]"
+        end
+        table.insert(lines, app_label)
+        table.insert(highlights, { line = app_line, col = 0, end_col = -1, hl = "GeminiTool" })
+      end
     end
 
     table.insert(lines, "")
@@ -933,6 +951,7 @@ function ChatUI:get_effective_settings()
     model = (self.pending_settings and self.pending_settings.model) or defaults.model or "gemini-3-flash-preview",
     search_setting = search_setting,  -- array or nil
     tool_mode = self.pending_settings and self.pending_settings.tool_mode,  -- nil = auto, or "all", "noSearch", "none"
+    enabled_mcp_servers = self.pending_settings and self.pending_settings.enabled_mcp_servers,  -- nil = all enabled, [] = none, array = specific
   }
 end
 
@@ -995,11 +1014,41 @@ function ChatUI:render_settings_bar()
     tool_mode = "all"
   end
 
+  -- Get MCP server count
+  local mcp_text = ""
+  if not is_cli and tool_mode ~= "off" then
+    local mcp_count = 0
+    if self.on_get_mcp_servers then
+      local servers = self.on_get_mcp_servers()
+      if settings.enabled_mcp_servers then
+        -- Count only specified servers
+        for _, name in ipairs(settings.enabled_mcp_servers) do
+          for _, server in ipairs(servers) do
+            if server.name == name and server.enabled then
+              mcp_count = mcp_count + 1
+              break
+            end
+          end
+        end
+      else
+        -- Count all enabled servers
+        for _, server in ipairs(servers) do
+          if server.enabled then
+            mcp_count = mcp_count + 1
+          end
+        end
+      end
+    end
+    if mcp_count > 0 then
+      mcp_text = " | MCP:" .. mcp_count
+    end
+  end
+
   -- Check if there are pending overrides
-  local has_override = self.pending_settings and (self.pending_settings.model or self.pending_settings.search_setting or self.pending_settings.tool_mode)
+  local has_override = self.pending_settings and (self.pending_settings.model or self.pending_settings.search_setting or self.pending_settings.tool_mode or self.pending_settings.enabled_mcp_servers)
   local override_marker = has_override and "*" or ""
 
-  local text = string.format(" %s | Search:%s | Tools:%s %s", model_short, search_text, tool_mode, override_marker)
+  local text = string.format(" %s | Search:%s | Tools:%s%s %s", model_short, search_text, tool_mode, mcp_text, override_marker)
 
   api.nvim_buf_set_option(self.settings_buf, "modifiable", true)
   api.nvim_buf_set_lines(self.settings_buf, 0, -1, false, { text })
@@ -1322,6 +1371,129 @@ function ChatUI:show_tool_mode_selection()
       -- User cancelled - use default
       self.pending_settings = self.pending_settings or {}
       self.pending_settings.tool_mode = current_tool_mode
+    end
+
+    -- Update settings bar
+    self:render_settings_bar()
+
+    -- Continue to MCP server selection if tools are enabled
+    local effective_tool_mode = (self.pending_settings and self.pending_settings.tool_mode) or current_tool_mode
+    if effective_tool_mode ~= "none" then
+      self:show_mcp_server_selection()
+    else
+      -- Return focus to input
+      if self.input_win and api.nvim_win_is_valid(self.input_win) then
+        api.nvim_set_current_win(self.input_win)
+        vim.cmd("startinsert")
+      end
+    end
+  end)
+end
+
+---Show MCP server selection dialog
+---@param self ChatUI
+function ChatUI:show_mcp_server_selection()
+  if not self.on_get_mcp_servers then
+    -- No MCP callback, skip to input focus
+    if self.input_win and api.nvim_win_is_valid(self.input_win) then
+      api.nvim_set_current_win(self.input_win)
+      vim.cmd("startinsert")
+    end
+    return
+  end
+
+  local servers = self.on_get_mcp_servers()
+  if not servers or #servers == 0 then
+    -- No MCP servers configured
+    if self.input_win and api.nvim_win_is_valid(self.input_win) then
+      api.nvim_set_current_win(self.input_win)
+      vim.cmd("startinsert")
+    end
+    return
+  end
+
+  local settings = self:get_effective_settings()
+
+  -- Determine currently enabled servers
+  local current_enabled = {}
+  if settings.enabled_mcp_servers then
+    for _, name in ipairs(settings.enabled_mcp_servers) do
+      current_enabled[name] = true
+    end
+  else
+    -- All enabled servers in config
+    for _, server in ipairs(servers) do
+      if server.enabled then
+        current_enabled[server.name] = true
+      end
+    end
+  end
+
+  -- Build selection items
+  local items = {}
+  local enabled_count = 0
+  for _, server in ipairs(servers) do
+    local is_on = current_enabled[server.name] and server.enabled
+    if is_on then enabled_count = enabled_count + 1 end
+    local prefix = is_on and "[x] " or "[ ] "
+    local tools_hint = ""
+    if server.tool_hints and #server.tool_hints > 0 then
+      tools_hint = " (" .. #server.tool_hints .. " tools)"
+    end
+    table.insert(items, {
+      display = prefix .. server.name .. tools_hint,
+      value = server.name,
+      enabled = is_on,
+      server_enabled = server.enabled,
+    })
+  end
+
+  -- Add options
+  table.insert(items, { display = ">> All enabled", value = "__all__" })
+  table.insert(items, { display = ">> None", value = "__none__" })
+  table.insert(items, { display = ">> Skip (keep current)", value = "__skip__" })
+
+  vim.ui.select(items, {
+    prompt = string.format("MCP Servers (%d enabled):", enabled_count),
+    format_item = function(item) return item.display end,
+  }, function(selected)
+    if selected then
+      self.pending_settings = self.pending_settings or {}
+
+      if selected.value == "__all__" then
+        -- Enable all servers that are enabled in config
+        self.pending_settings.enabled_mcp_servers = nil  -- nil means use all enabled
+        vim.notify("MCP: All enabled servers", vim.log.levels.INFO)
+      elseif selected.value == "__none__" then
+        -- Disable all MCP servers for this chat
+        self.pending_settings.enabled_mcp_servers = {}
+        vim.notify("MCP: Disabled", vim.log.levels.INFO)
+      elseif selected.value == "__skip__" then
+        -- Keep current settings
+      else
+        -- Toggle the selected server
+        local new_enabled = {}
+        for name, is_enabled in pairs(current_enabled) do
+          if is_enabled then
+            table.insert(new_enabled, name)
+          end
+        end
+
+        if selected.enabled then
+          -- Remove from list
+          new_enabled = vim.tbl_filter(function(n) return n ~= selected.value end, new_enabled)
+        else
+          -- Add to list (only if server is enabled in config)
+          if selected.server_enabled then
+            table.insert(new_enabled, selected.value)
+          else
+            vim.notify("MCP server '" .. selected.value .. "' is disabled in config", vim.log.levels.WARN)
+          end
+        end
+
+        self.pending_settings.enabled_mcp_servers = new_enabled
+        vim.notify("MCP: " .. (#new_enabled > 0 and table.concat(new_enabled, ", ") or "None"), vim.log.levels.INFO)
+      end
     end
 
     -- Update settings bar
