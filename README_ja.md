@@ -1,8 +1,8 @@
 # Gemini Helper for Neovim
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/takeshy/nvim-gemini-helper)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/takeshy/nvim-gemini-helper)
 
-Google Gemini AIをNeovimで使うためのプラグインです。RAG（File Search）機能も搭載しています。Obsidian Gemini HelperプラグインのLua移植版です。
+Google Gemini AIをNeovimで使うためのプラグインです。RAG（File Search）機能、MCP（Model Context Protocol）サーバー接続、MCP Appsによるブラウザでのインタラクティブ UI に対応しています。
 
 ![Gemini Helper スクリーンショット](gemini_helper.png)
 
@@ -10,6 +10,7 @@ Google Gemini AIをNeovimで使うためのプラグインです。RAG（File Se
 
 - **ストリーミングチャット**: Gemini APIでリアルタイム応答
 - **CLIプロバイダー対応**: Gemini CLI、Claude CLI、Codex CLIを代替バックエンドとして使用可能
+- **MCP対応**: MCPサーバーに接続して外部ツールを利用、MCP AppsブラウザUI対応（JSON-RPC 2.0）
 - **Function Calling**: AIがワークスペースを直接操作（9種類のツール）
 - **複数モデル対応**: Gemini 3 Flash/Pro Preview、2.5 Flash Lite、CLIモデル
 - **Web Search**: Google検索で最新情報を取得
@@ -104,6 +105,14 @@ use {
 | `:GeminiVerifyGeminiCli` | Gemini CLIのインストールを検証 |
 | `:GeminiVerifyClaudeCli` | Claude CLIのインストールを検証 |
 | `:GeminiVerifyCodexCli` | Codex CLIのインストールを検証 |
+| `:GeminiMcpAdd <名前> <URL>` | MCPサーバーを追加 |
+| `:GeminiMcpRemove <名前>` | MCPサーバーを削除 |
+| `:GeminiMcpToggle <名前>` | MCPサーバーの有効/無効を切替 |
+| `:GeminiMcpList` | MCPサーバー一覧を表示 |
+| `:GeminiMcpTest [名前]` | MCPサーバー接続をテスト |
+| `:GeminiMcpAppOpen` | MCP AppをブラウザでOpen |
+| `:GeminiMcpAppClose` | MCP Appブリッジを閉じる |
+| `:GeminiMcpAppAutoOpen` | MCP Apps自動オープンを切替 |
 
 ## デフォルトキーマップ
 
@@ -401,6 +410,92 @@ CLIモデルは対応するCLIツールのインストールと検証が必要�
 | `claude-cli` | コマンドライン経由のAnthropic Claude（Anthropicアカウントが必要） |
 | `codex-cli` | コマンドライン経由のOpenAI Codex（OpenAIアカウントが必要） |
 
+## MCP（Model Context Protocol）対応
+
+MCPサーバーに接続してAIの機能を外部ツールで拡張できます。インタラクティブなUIを持つMCP AppsはWebSocket/HTTPブリッジ経由でブラウザで開きます。
+
+### MCPサーバーの設定
+
+コマンドで追加:
+```vim
+:GeminiMcpAdd local http://localhost:8080/mcp
+```
+
+または設定ファイルで:
+```lua
+require("gemini_helper").setup({
+  mcp_servers = {
+    {
+      name = "local",
+      url = "http://localhost:8080/mcp",
+      enabled = true,
+    },
+  },
+  auto_open_mcp_app = true,  -- UIを返すツールでブラウザを自動オープン
+})
+```
+
+### MCPコマンド
+
+| コマンド | 説明 |
+|---------|------|
+| `:GeminiMcpAdd <名前> <URL>` | MCPサーバーを追加し接続テスト |
+| `:GeminiMcpRemove <名前>` | MCPサーバーを削除 |
+| `:GeminiMcpToggle <名前>` | MCPサーバーの有効/無効を切替 |
+| `:GeminiMcpList` | 設定済みMCPサーバーを一覧表示 |
+| `:GeminiMcpTest [名前]` | MCPサーバー接続をテスト |
+| `:GeminiMcpAppOpen` | 最後のMCP AppをブラウザでOpen |
+| `:GeminiMcpAppClose` | MCP Appブリッジを閉じる |
+| `:GeminiMcpAppAutoOpen` | MCP Apps自動オープンを切替 |
+
+### MCP Apps（インタラクティブUI）
+
+MCPツールがUIリソース（`ui://`スキーム）を返す場合、プラグインはWebSocket経由の双方向通信でブラウザを開きます。
+
+**アーキテクチャ:**
+```
+Neovim ↔ WebSocketサーバー ↔ ブリッジHTML ↔ iframe（MCP App）
+                              ↑              ↓
+                           postMessage ←────┘
+```
+
+**JSON-RPC 2.0プロトコル:**
+
+ブリッジは[MCP Apps仕様](https://github.com/modelcontextprotocol/ext-apps)に準拠したJSON-RPC 2.0を実装:
+
+```javascript
+// iframeからのツール呼び出し
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": { "name": "tool-name", "arguments": {} }
+}
+
+// ホストからの応答
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": { "content": [...] }
+}
+```
+
+**MCP App SDK（iframeに注入）:**
+```javascript
+// ツールを呼び出す
+const result = await window.mcpApps.callTool("tool-name", { arg: "value" });
+
+// ホストの機能を確認
+const caps = window.mcpApps.getCapabilities();
+```
+
+### MCPツールの仕組み
+
+1. チャット中、AIは有効なMCPサーバーからツールを発見
+2. AIはMCPツールをネイティブツールのように呼び出し可能
+3. ツールがUIコンテンツを返すと、ブラウザで自動オープン（有効時）
+4. UIは追加のツール呼び出しのためNeovimにコールバック可能
+
 ## CLIプロバイダー
 
 APIキー不要でCLIベースのAIバックエンドを使用できます。CLIモデルはセッション再開（Claude/Codex）をサポートし、会話コンテキストを維持できます。
@@ -465,4 +560,4 @@ MIT
 
 ## クレジット
 
-[obsidian-gemini-helper](https://github.com/your-username/obsidian-gemini-helper) をベースにしています。
+[obsidian-gemini-helper](https://github.com/takeshy/obsidian-gemini-helper) からインスピレーションを得ています。

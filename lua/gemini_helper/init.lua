@@ -3,12 +3,15 @@
 
 local M = {}
 
-M.version = "1.1.0"
+M.version = "1.2.0"
 
 -- Module imports
 local gemini = require("gemini_helper.core.gemini")
 local cli_provider = require("gemini_helper.core.cli_provider")
 local tools = require("gemini_helper.core.tools")
+local mcp_tools = require("gemini_helper.core.mcp_tools")
+local mcp_client = require("gemini_helper.core.mcp_client")
+local mcp_app_bridge = require("gemini_helper.core.mcp_app_bridge")
 local notes = require("gemini_helper.vault.notes")
 local search = require("gemini_helper.vault.search")
 local tool_executor = require("gemini_helper.vault.tool_executor")
@@ -28,6 +31,10 @@ local state = {
   chat = nil,
   current_chat_id = nil,
   original_bufnr = nil,  -- Buffer that was active before opening chat
+  mcp_executor = nil,  -- MCP Tool Executor
+  mcp_tools_cache = nil,  -- Cached MCP tools
+  last_mcp_apps = nil,  -- Last MCP Apps with UI resources
+  active_mcp_bridges = {},  -- Active MCP App WebSocket bridges
 }
 
 -- Default system prompt
@@ -215,6 +222,63 @@ function M.setup(opts)
     M.verify_cli("codex-cli")
   end, { desc = "Verify Codex CLI installation" })
 
+  -- MCP Server commands
+  vim.api.nvim_create_user_command("GeminiMcpAdd", function(cmd_opts)
+    local args = cmd_opts.args
+    local name, url = args:match("^(%S+)%s+(%S+)$")
+    if name and url then
+      M.add_mcp_server({ name = name, url = url })
+    else
+      vim.notify("Usage: :GeminiMcpAdd <name> <url>", vim.log.levels.ERROR)
+    end
+  end, { nargs = "+", desc = "Add an MCP server" })
+
+  vim.api.nvim_create_user_command("GeminiMcpList", function()
+    M.list_mcp_servers()
+  end, { desc = "List MCP servers" })
+
+  vim.api.nvim_create_user_command("GeminiMcpTest", function(cmd_opts)
+    local name = cmd_opts.args
+    if name and name ~= "" then
+      M.test_mcp_server(name)
+    else
+      vim.notify("Usage: :GeminiMcpTest <server_name>", vim.log.levels.ERROR)
+    end
+  end, { nargs = 1, desc = "Test MCP server connection" })
+
+  vim.api.nvim_create_user_command("GeminiMcpToggle", function(cmd_opts)
+    local name = cmd_opts.args
+    if name and name ~= "" then
+      M.toggle_mcp_server(name)
+    else
+      vim.notify("Usage: :GeminiMcpToggle <server_name>", vim.log.levels.ERROR)
+    end
+  end, { nargs = 1, desc = "Toggle MCP server enabled status" })
+
+  vim.api.nvim_create_user_command("GeminiMcpRemove", function(cmd_opts)
+    local name = cmd_opts.args
+    if name and name ~= "" then
+      M.remove_mcp_server(name)
+    else
+      vim.notify("Usage: :GeminiMcpRemove <server_name>", vim.log.levels.ERROR)
+    end
+  end, { nargs = 1, desc = "Remove an MCP server" })
+
+  vim.api.nvim_create_user_command("GeminiMcpAppOpen", function()
+    M.open_mcp_app()
+  end, { desc = "Open last MCP App in browser" })
+
+  vim.api.nvim_create_user_command("GeminiMcpAppClose", function()
+    M.close_mcp_app_bridges()
+  end, { desc = "Close all MCP App bridges" })
+
+  vim.api.nvim_create_user_command("GeminiMcpAppAutoOpen", function()
+    local current = state.settings:get("auto_open_mcp_app")
+    state.settings:set("auto_open_mcp_app", not current)
+    state.settings:save()
+    vim.notify("Auto-open MCP App: " .. (not current and "ON" or "OFF"), vim.log.levels.INFO)
+  end, { desc = "Toggle auto-open MCP App in browser" })
+
   vim.notify("Gemini Helper loaded", vim.log.levels.INFO)
 end
 
@@ -343,6 +407,9 @@ function M.open_chat(initial_input)
         end
         gemini.list_file_search_stores(api_key, callback)
       end,
+      on_get_mcp_servers = function()
+        return state.settings:get_mcp_servers()
+      end,
       available_models = M.get_available_models(),
     })
   end
@@ -463,6 +530,29 @@ function M.handle_message(message, opts)
     tool_mode = tool_mode,
   })
 
+  -- Get MCP tools if tool_mode is not "none"
+  local mcp_tool_list = {}
+  if tool_mode ~= "none" then
+    local enabled_mcp_names = opts.enabled_mcp_servers  -- nil = use all enabled servers
+    local mcp_servers = mcp_tools.get_enabled_servers(
+      state.settings:get_mcp_servers(),
+      enabled_mcp_names
+    )
+    if #mcp_servers > 0 then
+      mcp_tool_list = mcp_tools.fetch_mcp_tools(mcp_servers)
+      -- Merge MCP tools with vault tools
+      for _, mcp_tool in ipairs(mcp_tool_list) do
+        table.insert(enabled_tools, mcp_tool)
+      end
+    end
+  end
+
+  -- Create MCP executor if we have MCP tools
+  local current_mcp_executor = nil
+  if #mcp_tool_list > 0 then
+    current_mcp_executor = mcp_tools.create_executor(mcp_tool_list)
+  end
+
   -- Build messages for API (copy to avoid mutation)
   local messages = {}
   for _, msg in ipairs(state.chat:get_messages()) do
@@ -488,6 +578,7 @@ function M.handle_message(message, opts)
   local tools_used = {}
   local rag_sources = {}
   local web_search_used = false
+  local mcp_apps = {}  -- MCP Apps with UI
 
   -- Use custom model if specified
   local client = state.gemini_client
@@ -505,6 +596,21 @@ function M.handle_message(message, opts)
     execute_tool = function(tool_name, args)
       table.insert(tools_used, tool_name)
       state.chat:add_tool_call(tool_name, args)
+
+      -- Check if this is an MCP tool
+      if tool_name:match("^mcp_") and current_mcp_executor then
+        local mcp_result = current_mcp_executor.execute(tool_name, args)
+        if mcp_result.error then
+          return { success = false, error = mcp_result.error }
+        end
+        -- Collect MCP App info if available
+        if mcp_result.mcp_app then
+          table.insert(mcp_apps, mcp_result.mcp_app)
+        end
+        return { success = true, result = mcp_result.result or "" }
+      end
+
+      -- Execute vault tool
       return state.executor:execute(tool_name, args)
     end,
     on_chunk = function(chunk)
@@ -531,16 +637,36 @@ function M.handle_message(message, opts)
     end,
     on_done = function(result)
       vim.schedule(function()
+        -- Cleanup MCP executor
+        if current_mcp_executor then
+          current_mcp_executor.cleanup()
+        end
+
         -- Handle aborted state
         if result.aborted then
           state.chat:end_streaming(nil, nil, nil, true)
           return
         end
 
+        -- Store MCP apps for later use
+        if #mcp_apps > 0 then
+          state.last_mcp_apps = mcp_apps
+          -- Auto-open MCP App if setting is enabled
+          if state.settings:get("auto_open_mcp_app") then
+            vim.defer_fn(function()
+              M.open_mcp_app()
+            end, 100)
+          else
+            vim.notify("MCP App available. Use :GeminiMcpAppOpen to view.", vim.log.levels.INFO)
+          end
+        end
+
         state.chat:end_streaming(
           #tools_used > 0 and tools_used or nil,
           #rag_sources > 0 and rag_sources or nil,
-          result.web_search_used or web_search_used
+          result.web_search_used or web_search_used,
+          nil,  -- aborted
+          #mcp_apps > 0 and mcp_apps or nil
         )
 
         -- Save chat
@@ -552,6 +678,11 @@ function M.handle_message(message, opts)
     end,
     on_error = function(err)
       vim.schedule(function()
+        -- Cleanup MCP executor
+        if current_mcp_executor then
+          current_mcp_executor.cleanup()
+        end
+
         state.chat:end_streaming()
         state.chat:show_error(tostring(err))
       end)
@@ -1001,6 +1132,325 @@ end
 ---@return table|nil
 function M.get_cli_manager()
   return state.cli_manager
+end
+
+-- ============================================================================
+-- MCP Server Functions
+-- ============================================================================
+
+---Add an MCP server
+---@param opts table { name, url, headers? }
+function M.add_mcp_server(opts)
+  if not opts.name or not opts.url then
+    vim.notify("MCP server requires 'name' and 'url'", vim.log.levels.ERROR)
+    return
+  end
+
+  state.settings:add_mcp_server({
+    name = opts.name,
+    url = opts.url,
+    headers = opts.headers,
+    enabled = true,
+  })
+  state.settings:save()
+
+  vim.notify("MCP server '" .. opts.name .. "' added. Testing connection...", vim.log.levels.INFO)
+
+  -- Automatically test the connection
+  M.test_mcp_server(opts.name)
+end
+
+---Remove an MCP server
+---@param name string
+function M.remove_mcp_server(name)
+  state.settings:remove_mcp_server(name)
+  state.settings:save()
+  -- Clear tools cache
+  mcp_tools.clear_cache()
+  vim.notify("MCP server '" .. name .. "' removed", vim.log.levels.INFO)
+end
+
+---Toggle MCP server enabled status
+---@param name string
+function M.toggle_mcp_server(name)
+  local new_status = state.settings:toggle_mcp_server(name)
+  state.settings:save()
+  vim.notify(
+    "MCP server '" .. name .. "': " .. (new_status and "enabled" or "disabled"),
+    vim.log.levels.INFO
+  )
+end
+
+---List MCP servers
+function M.list_mcp_servers()
+  local servers = state.settings:get_mcp_servers()
+
+  if #servers == 0 then
+    vim.notify("No MCP servers configured. Use :GeminiMcpAdd to add one.", vim.log.levels.INFO)
+    return
+  end
+
+  local lines = { "MCP Servers:", "============", "" }
+
+  for _, server in ipairs(servers) do
+    local status = server.enabled and "[ON]" or "[OFF]"
+    local tools_hint = ""
+    if server.tool_hints and #server.tool_hints > 0 then
+      tools_hint = " (" .. #server.tool_hints .. " tools)"
+    end
+    table.insert(lines, string.format("%s %s - %s%s", status, server.name, server.url, tools_hint))
+  end
+
+  table.insert(lines, "")
+  table.insert(lines, "Commands:")
+  table.insert(lines, "  :GeminiMcpAdd <name> <url> - Add server")
+  table.insert(lines, "  :GeminiMcpTest <name> - Test connection")
+  table.insert(lines, "  :GeminiMcpToggle <name> - Toggle enabled")
+  table.insert(lines, "  :GeminiMcpRemove <name> - Remove server")
+
+  -- Create floating window
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_option(buf, "modifiable", false)
+
+  local width = 60
+  local height = #lines
+  local col = math.floor((vim.o.columns - width) / 2)
+  local row = math.floor((vim.o.lines - height) / 2)
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    col = col,
+    row = row,
+    style = "minimal",
+    border = "rounded",
+    title = " MCP Servers ",
+    title_pos = "center",
+  })
+
+  vim.keymap.set("n", "q", function()
+    vim.api.nvim_win_close(win, true)
+  end, { buffer = buf })
+
+  vim.keymap.set("n", "<Esc>", function()
+    vim.api.nvim_win_close(win, true)
+  end, { buffer = buf })
+end
+
+---Test MCP server connection
+---@param name string
+function M.test_mcp_server(name)
+  local server = state.settings:find_mcp_server(name)
+  if not server then
+    vim.notify("MCP server '" .. name .. "' not found", vim.log.levels.ERROR)
+    return
+  end
+
+  vim.notify("Testing MCP server '" .. name .. "'...", vim.log.levels.INFO)
+
+  local success, err, tool_names = mcp_client.test_connection(server)
+
+  if success then
+    -- Update tool hints
+    state.settings:update_mcp_server_tools(name, tool_names)
+    state.settings:save()
+    -- Clear tools cache to force refresh
+    mcp_tools.clear_cache()
+
+    local tools_msg = ""
+    if tool_names and #tool_names > 0 then
+      tools_msg = "\nTools: " .. table.concat(tool_names, ", ")
+    end
+    vim.notify("MCP server '" .. name .. "' connected successfully!" .. tools_msg, vim.log.levels.INFO)
+  else
+    vim.notify("MCP server '" .. name .. "' connection failed: " .. (err or "unknown error"), vim.log.levels.ERROR)
+  end
+end
+
+---Get MCP servers for chat settings
+---@return table[]
+function M.get_mcp_servers()
+  return state.settings:get_mcp_servers()
+end
+
+---Get enabled MCP servers
+---@return table[]
+function M.get_enabled_mcp_servers()
+  return state.settings:get_enabled_mcp_servers()
+end
+
+-- ============================================================================
+-- MCP App Bridge Functions
+-- ============================================================================
+
+---Open MCP App in browser with WebSocket bridge
+---@param app_index number|nil  Index of app to open (default: 1)
+function M.open_mcp_app(app_index)
+  app_index = app_index or 1
+
+  if not state.last_mcp_apps or #state.last_mcp_apps == 0 then
+    vim.notify("No MCP App available. Run a tool that returns UI first.", vim.log.levels.WARN)
+    return
+  end
+
+  local app = state.last_mcp_apps[app_index]
+  if not app then
+    vim.notify("MCP App index " .. app_index .. " not found", vim.log.levels.ERROR)
+    return
+  end
+
+  if not app.ui_resource then
+    vim.notify("MCP App has no UI resource", vim.log.levels.ERROR)
+    return
+  end
+
+  -- Create MCP client for tool calls from browser
+  local mcp_client_for_app = mcp_client.new({
+    name = "mcp_app_bridge",
+    url = app.server_url,
+  })
+
+  local client_initialized = false
+
+  -- Declare bridge first so the closure can capture it
+  local bridge = nil
+  local err
+
+  -- Open the MCP App with WebSocket bridge
+  bridge, err = mcp_app_bridge.open_mcp_app(
+    app.ui_resource,
+    app.server_url,
+    {
+      on_message = function(msg, ws_client)
+        vim.schedule(function()
+          -- Handle JSON-RPC 2.0 messages
+          if msg.jsonrpc ~= "2.0" then
+            return
+          end
+
+          -- Handle tools/call request
+          if msg.method == "tools/call" and msg.id ~= nil then
+            local params = msg.params or {}
+            local tool_name = params.name
+            local tool_args = params.arguments or {}
+            local request_id = msg.id
+
+            -- Initialize client if not done
+            if not client_initialized then
+              local _, init_err = mcp_client_for_app:initialize()
+              if init_err then
+                -- Send JSON-RPC error response
+                if bridge then
+                  bridge:send(ws_client, {
+                    jsonrpc = "2.0",
+                    id = request_id,
+                    error = {
+                      code = -32603,
+                      message = "Failed to initialize MCP client: " .. init_err,
+                    },
+                  })
+                end
+                return
+              end
+              client_initialized = true
+            end
+
+            -- Call the tool
+            local result, call_err = mcp_client_for_app:call_tool(tool_name, tool_args)
+
+            if call_err then
+              -- Send JSON-RPC error response
+              if bridge then
+                bridge:send(ws_client, {
+                  jsonrpc = "2.0",
+                  id = request_id,
+                  error = {
+                    code = -32000,
+                    message = call_err,
+                  },
+                })
+              end
+            else
+              -- Send JSON-RPC success response
+              if bridge then
+                bridge:send(ws_client, {
+                  jsonrpc = "2.0",
+                  id = request_id,
+                  result = result,
+                })
+              end
+            end
+            return
+          end
+
+          -- Handle JSON-RPC notifications (no id)
+          if msg.method and msg.id == nil then
+            if state.settings:get("debug_mode") then
+              vim.notify("MCP App notification: " .. msg.method, vim.log.levels.DEBUG)
+            end
+          end
+        end)
+      end,
+    }
+  )
+
+  if not bridge then
+    vim.notify("Failed to open MCP App: " .. (err or "unknown error"), vim.log.levels.ERROR)
+    return
+  end
+
+  -- Store bridge and client for later cleanup
+  table.insert(state.active_mcp_bridges, {
+    bridge = bridge,
+    client = mcp_client_for_app,
+  })
+end
+
+---Close all active MCP App bridges
+function M.close_mcp_app_bridges()
+  local count = #state.active_mcp_bridges
+  for _, item in ipairs(state.active_mcp_bridges) do
+    -- Close bridge
+    if item.bridge then
+      pcall(function() item.bridge:close() end)
+    elseif item.close then
+      -- Old format (just bridge object)
+      pcall(function() item:close() end)
+    end
+    -- Close MCP client
+    if item.client then
+      pcall(function() item.client:close() end)
+    end
+  end
+  state.active_mcp_bridges = {}
+
+  if count > 0 then
+    vim.notify("Closed " .. count .. " MCP App bridge(s)", vim.log.levels.INFO)
+  else
+    vim.notify("No active MCP App bridges", vim.log.levels.INFO)
+  end
+end
+
+---Send message to all connected MCP Apps
+---@param message table
+function M.send_to_mcp_apps(message)
+  for _, item in ipairs(state.active_mcp_bridges) do
+    local bridge = item.bridge or item
+    if bridge.broadcast then
+      bridge:broadcast({
+        type = "to_app",
+        data = message,
+      })
+    end
+  end
+end
+
+---Get active MCP App bridges count
+---@return number
+function M.get_mcp_app_bridge_count()
+  return #state.active_mcp_bridges
 end
 
 return M

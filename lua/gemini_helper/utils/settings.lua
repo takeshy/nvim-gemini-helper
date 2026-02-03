@@ -56,6 +56,13 @@ M.defaults = {
 
   -- Session IDs for CLI providers (per-chat)
   cli_sessions = {},  -- { [chat_id] = { ["claude-cli"] = session_id, ["codex-cli"] = thread_id } }
+
+  -- MCP (Model Context Protocol) servers
+  -- Array of { name, url, headers?, enabled, tool_hints? }
+  mcp_servers = {},
+
+  -- MCP App settings
+  auto_open_mcp_app = true,  -- Automatically open MCP App when returned
 }
 
 ---@class SettingsManager
@@ -357,6 +364,103 @@ end
 function SettingsManager:set_api_plan(plan)
   if plan == "paid" or plan == "free" then
     self.settings.api_plan = plan
+  end
+end
+
+-- ============================================================================
+-- MCP Server Settings
+-- ============================================================================
+
+---Get all MCP servers
+---@param self SettingsManager
+---@return table[]
+function SettingsManager:get_mcp_servers()
+  return self.settings.mcp_servers or {}
+end
+
+---Get enabled MCP servers
+---@param self SettingsManager
+---@return table[]
+function SettingsManager:get_enabled_mcp_servers()
+  local servers = self.settings.mcp_servers or {}
+  local enabled = {}
+  for _, server in ipairs(servers) do
+    if server.enabled then
+      table.insert(enabled, server)
+    end
+  end
+  return enabled
+end
+
+---Add an MCP server
+---@param self SettingsManager
+---@param server table { name, url, headers?, enabled }
+function SettingsManager:add_mcp_server(server)
+  self.settings.mcp_servers = self.settings.mcp_servers or {}
+  -- Check for duplicate name
+  for i, existing in ipairs(self.settings.mcp_servers) do
+    if existing.name == server.name then
+      -- Update existing
+      self.settings.mcp_servers[i] = server
+      return
+    end
+  end
+  table.insert(self.settings.mcp_servers, server)
+end
+
+---Remove an MCP server by name
+---@param self SettingsManager
+---@param name string
+function SettingsManager:remove_mcp_server(name)
+  local servers = self.settings.mcp_servers or {}
+  for i, server in ipairs(servers) do
+    if server.name == name then
+      table.remove(servers, i)
+      return
+    end
+  end
+end
+
+---Toggle MCP server enabled status
+---@param self SettingsManager
+---@param name string
+---@return boolean new_status
+function SettingsManager:toggle_mcp_server(name)
+  local servers = self.settings.mcp_servers or {}
+  for _, server in ipairs(servers) do
+    if server.name == name then
+      server.enabled = not server.enabled
+      return server.enabled
+    end
+  end
+  return false
+end
+
+---Find MCP server by name
+---@param self SettingsManager
+---@param name string
+---@return table|nil
+function SettingsManager:find_mcp_server(name)
+  local servers = self.settings.mcp_servers or {}
+  for _, server in ipairs(servers) do
+    if server.name == name then
+      return server
+    end
+  end
+  return nil
+end
+
+---Update MCP server tool hints (after test connection)
+---@param self SettingsManager
+---@param name string
+---@param tool_hints string[]
+function SettingsManager:update_mcp_server_tools(name, tool_hints)
+  local servers = self.settings.mcp_servers or {}
+  for _, server in ipairs(servers) do
+    if server.name == name then
+      server.tool_hints = tool_hints
+      return
+    end
   end
 end
 
