@@ -10,7 +10,7 @@ local json = vim.json
 M.defaults = {
   -- API settings
   google_api_key = "",
-  model = "gemini-3-flash-preview",
+  model = "gemini-3.5-flash",
   api_plan = "paid",  -- "paid" or "free"
 
   -- Workspace settings
@@ -71,6 +71,23 @@ M.defaults = {
 local SettingsManager = {}
 SettingsManager.__index = SettingsManager
 
+local function normalize_deprecated_model_name(model)
+  if model == "gemini-3.1-flash-lite-preview" then
+    return "gemini-3.1-flash-lite"
+  elseif model == "gemini-3-flash-preview" then
+    return "gemini-3.5-flash"
+  elseif model == "gemini-3-pro-preview" then
+    return "gemini-3.1-pro-preview"
+  elseif model == "gemini-2.5-flash" then
+    return "gemini-3.5-flash"
+  elseif model == "gemini-2.5-pro" then
+    return "gemini-3.1-pro-preview"
+  elseif model == "gemini-2.5-flash-lite" then
+    return "gemini-3.1-flash-lite"
+  end
+  return model
+end
+
 ---Get the config file path
 ---@return string
 local function get_config_path()
@@ -111,6 +128,11 @@ function SettingsManager:load()
 
   -- Merge with defaults (to handle new settings)
   self.settings = vim.tbl_deep_extend("force", M.defaults, loaded)
+  self.settings.model = normalize_deprecated_model_name(self.settings.model)
+
+  for _, command in ipairs(self.settings.bang_commands or {}) do
+    command.model = normalize_deprecated_model_name(command.model)
+  end
 
   return true
 end

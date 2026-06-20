@@ -13,61 +13,63 @@ M.API_PLANS = { "paid", "free" }
 M.DEFAULT_API_PLAN = "paid"
 
 -- Default model
-M.DEFAULT_MODEL = "gemini-3-flash-preview"
+M.DEFAULT_MODEL = "gemini-3.5-flash"
 
 -- Paid tier models
 M.PAID_MODELS = {
   {
-    name = "gemini-3-flash-preview",
-    display_name = "Gemini 3 Flash Preview",
-    description = "Latest fast model with 1M context (recommended)",
+    name = "gemini-3.1-pro-preview",
+    display_name = "Gemini 3.1 Pro Preview",
+    description = "Latest flagship model with 1M context, best performance",
   },
   {
-    name = "gemini-3-pro-preview",
-    display_name = "Gemini 3 Pro Preview",
-    description = "Latest flagship model with 1M context",
+    name = "gemini-3.1-pro-preview-customtools",
+    display_name = "Gemini 3.1 Pro Preview (Custom Tools)",
+    description = "Optimized for agentic workflows with custom tools and bash",
   },
   {
-    name = "gemini-2.5-flash-lite",
-    display_name = "Gemini 2.5 Flash Lite",
-    description = "Lightweight flash model",
+    name = "gemini-3.5-flash",
+    display_name = "Gemini 3.5 Flash",
+    description = "Fast model with 1M context, best cost-performance (recommended)",
+  },
+  {
+    name = "gemini-3.1-flash-lite",
+    display_name = "Gemini 3.1 Flash Lite",
+    description = "Stable low-latency, cost-effective model with 1M context",
+  },
+  {
+    name = "gemma-4-31b-it",
+    display_name = "Gemma 4 31B",
+    description = "Gemma 4 model with function calling and thinking",
+  },
+  {
+    name = "gemma-4-26b-a4b-it",
+    display_name = "Gemma 4 26B A4B (MoE)",
+    description = "Gemma 4 MoE model with function calling and thinking",
   },
 }
 
 -- Free tier models
 M.FREE_MODELS = {
   {
-    name = "gemini-2.5-flash",
-    display_name = "Gemini 2.5 Flash",
+    name = "gemini-3.5-flash",
+    display_name = "Gemini 3.5 Flash",
     description = "Free tier fast model",
   },
   {
-    name = "gemini-2.5-flash-lite",
-    display_name = "Gemini 2.5 Flash Lite",
-    description = "Free tier lightweight model",
+    name = "gemini-3.1-flash-lite",
+    display_name = "Gemini 3.1 Flash Lite",
+    description = "Free tier stable cost-effective model",
   },
   {
-    name = "gemini-3-flash-preview",
-    display_name = "Gemini 3 Flash Preview",
-    description = "Free tier preview model",
+    name = "gemma-4-31b-it",
+    display_name = "Gemma 4 31B",
+    description = "Free tier Gemma 4 model with function calling and thinking",
   },
   {
-    name = "gemma-3-27b-it",
-    display_name = "Gemma 3 27B",
-    description = "Free Gemma model (no function calling)",
-    no_function_calling = true,
-  },
-  {
-    name = "gemma-3-12b-it",
-    display_name = "Gemma 3 12B",
-    description = "Free Gemma model (no function calling)",
-    no_function_calling = true,
-  },
-  {
-    name = "gemma-3-4b-it",
-    display_name = "Gemma 3 4B",
-    description = "Free Gemma model (no function calling)",
-    no_function_calling = true,
+    name = "gemma-4-26b-a4b-it",
+    display_name = "Gemma 4 26B A4B (MoE)",
+    description = "Free tier Gemma 4 MoE model with function calling and thinking",
   },
 }
 
@@ -99,8 +101,8 @@ end
 ---@param model_name string
 ---@return boolean
 function M.supports_function_calling(model_name)
-  -- gemma models don't support function calling
-  return not model_name:match("^gemma")
+  -- Legacy Gemma 3 models don't support function calling.
+  return not model_name:match("^gemma%-3")
 end
 
 -- CLI Model info (for UI, loaded from cli_provider module)
@@ -267,6 +269,14 @@ function GeminiClient:chat_stream(opts)
   local rag_store_name = opts.rag_store_name
   local web_search_enabled = opts.web_search_enabled
   local debug_mode = opts.debug_mode
+  local has_rag = false
+  if rag_store_name then
+    if type(rag_store_name) == "table" then
+      has_rag = #rag_store_name > 0
+    else
+      has_rag = rag_store_name ~= ""
+    end
+  end
 
   local contents = M.messages_to_history(messages)
 
@@ -291,8 +301,8 @@ function GeminiClient:chat_stream(opts)
   if web_search_enabled then
     body.tools = { { google_search = vim.empty_dict() } }
   else
-    -- Add tools
-    if #tools > 0 then
+    -- Add tools. RAG file_search must not be combined with function tools.
+    if #tools > 0 and not has_rag then
       body.tools = { M.tools_to_declarations(tools) }
     end
 
@@ -559,6 +569,15 @@ function GeminiClient:chat_stream(opts)
               return
             end
           end
+
+          if on_error then
+            local error_msg = "No content received from API"
+            if has_rag then
+              error_msg = error_msg .. ". If using RAG, check that the file search store exists and is compatible with the selected model."
+            end
+            on_error(error_msg)
+          end
+          return
         end
 
         -- Handle function calls

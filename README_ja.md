@@ -12,7 +12,7 @@ Google Gemini AIをNeovimで使うためのプラグインです。RAG（File Se
 - **CLIプロバイダー対応**: Gemini CLI、Claude CLI、Codex CLIを代替バックエンドとして使用可能
 - **MCP対応**: MCPサーバーに接続して外部ツールを利用、MCP AppsブラウザUI対応（JSON-RPC 2.0）
 - **Function Calling**: AIがワークスペースを直接操作（9種類のツール）
-- **複数モデル対応**: Gemini 3 Flash/Pro Preview、2.5 Flash Lite、CLIモデル
+- **複数モデル対応**: Gemini 3.1 Pro、3.5 Flash、Gemma 4、CLIモデル
 - **Web Search**: Google検索で最新情報を取得
 - **Bangコマンド**: `!コマンド名`で呼び出せるカスタムコマンドテンプレート
 - **ファイル添付**: 画像やテキストファイルの添付
@@ -41,7 +41,7 @@ Google Gemini AIをNeovimで使うためのプラグインです。RAG（File Se
   config = function()
     require("gemini_helper").setup({
       api_key = vim.env.GOOGLE_API_KEY, -- または :GeminiSetApiKey で設定
-      model = "gemini-3-flash-preview", -- デフォルトモデル
+      model = "gemini-3.5-flash", -- デフォルトモデル
       workspace = vim.fn.getcwd(),
       allow_write = false, -- ファイル編集を許可する場合はtrue
       search_setting = nil, -- nil, "__websearch__", ストア名、または配列
@@ -176,7 +176,7 @@ require("gemini_helper").setup({
   -- API設定
   api_key = "",  -- Google AI APIキー（必須）
   api_plan = "paid",  -- "paid" または "free"（利用可能なモデルに影響）
-  model = "gemini-3-flash-preview",  -- 使用するモデル
+  model = "gemini-3.5-flash",  -- 使用するモデル
 
   -- ワークスペース
   workspace = vim.fn.getcwd(),  -- ファイル操作のルートディレクトリ
@@ -278,7 +278,7 @@ require("gemini_helper").setup({
       name = "explain",
       prompt_template = "このコードを説明して:",
       description = "コードを説明",
-      model = "gemini-3-pro-preview",  -- このコマンド用にモデルを変更
+      model = "gemini-3.1-pro-preview",  -- このコマンド用にモデルを変更
     },
     {
       name = "search",
@@ -385,20 +385,21 @@ AIの応答...
 
 | モデル | 説明 |
 |--------|------|
-| `gemini-3-flash-preview` | 最新の高速モデル、1Mコンテキスト（デフォルト、推奨） |
-| `gemini-3-pro-preview` | 最新のフラッグシップモデル、1Mコンテキスト、最高性能 |
-| `gemini-2.5-flash-lite` | 軽量フラッシュモデル |
+| `gemini-3.1-pro-preview` | 最新のフラッグシップモデル、1Mコンテキスト、最高性能 |
+| `gemini-3.1-pro-preview-customtools` | カスタムツールとbash向けに最適化されたエージェントワークフロー |
+| `gemini-3.5-flash` | 高速モデル、1Mコンテキスト、優れたコストパフォーマンス（デフォルト、推奨） |
+| `gemini-3.1-flash-lite` | 安定した低レイテンシ・低コストモデル、1Mコンテキスト |
+| `gemma-4-31b-it` | Function Calling と Thinking 対応の Gemma 4 モデル |
+| `gemma-4-26b-a4b-it` | Function Calling と Thinking 対応の Gemma 4 MoE モデル |
 
 ### Free プランモデル
 
 | モデル | 説明 |
 |--------|------|
-| `gemini-2.5-flash` | 無料枠の高速モデル |
-| `gemini-2.5-flash-lite` | 無料枠の軽量モデル |
-| `gemini-3-flash-preview` | 無料枠のプレビューモデル |
-| `gemma-3-27b-it` | Gemma 3 27B（Function Calling非対応） |
-| `gemma-3-12b-it` | Gemma 3 12B（Function Calling非対応） |
-| `gemma-3-4b-it` | Gemma 3 4B（Function Calling非対応） |
+| `gemini-3.5-flash` | 無料枠の高速モデル |
+| `gemini-3.1-flash-lite` | 無料枠の安定した低コストモデル |
+| `gemma-4-31b-it` | 無料枠の Gemma 4 モデル（Function Calling と Thinking 対応） |
+| `gemma-4-26b-a4b-it` | 無料枠の Gemma 4 MoE モデル（Function Calling と Thinking 対応） |
 
 ### CLIモデル
 

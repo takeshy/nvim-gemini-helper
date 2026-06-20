@@ -281,13 +281,9 @@ function M.get_tool_mode(opts)
     end
   end
 
-  -- RAG enabled: exclude search tools (RAG handles search)
-  -- gemini-2.5-flash with RAG: no tools (doesn't work well with function calling + RAG)
+  -- RAG uses Gemini's file_search tool. Do not combine it with function tools.
   if opts.rag_enabled then
-    if opts.model == "gemini-2.5-flash" then
-      return "none"
-    end
-    return "noSearch"
+    return "none"
   end
 
   return "all"

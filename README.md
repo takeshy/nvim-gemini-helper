@@ -12,7 +12,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. Supports M
 - **CLI Provider Support**: Use Gemini CLI, Claude CLI, or Codex CLI as alternative backends
 - **MCP Support**: Connect to MCP servers for external tools with MCP Apps browser UI support (JSON-RPC 2.0)
 - **Function Calling**: AI can directly execute workspace operations (9 tools)
-- **Multiple Model Support**: Gemini 3 Flash/Pro Preview, 2.5 Flash Lite, and CLI models
+- **Multiple Model Support**: Gemini 3.1 Pro, 3.5 Flash, Gemma 4, and CLI models
 - **Web Search**: Search the web for up-to-date information using Google Search
 - **Bang Commands**: Custom command templates triggered with `!commandname`
 - **File Attachments**: Support for images and text files
@@ -41,7 +41,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. Supports M
   config = function()
     require("gemini_helper").setup({
       api_key = vim.env.GOOGLE_API_KEY, -- or set via :GeminiSetApiKey
-      model = "gemini-3-flash-preview", -- Default model
+      model = "gemini-3.5-flash", -- Default model
       workspace = vim.fn.getcwd(),
       allow_write = false, -- Enable to allow file modifications
       search_setting = nil, -- Default: nil, "__websearch__", store name, or array
@@ -176,7 +176,7 @@ require("gemini_helper").setup({
   -- API Settings
   api_key = "",  -- Google AI API key (required)
   api_plan = "paid",  -- "paid" or "free" (affects available models)
-  model = "gemini-3-flash-preview",  -- Model to use
+  model = "gemini-3.5-flash",  -- Model to use
 
   -- Workspace
   workspace = vim.fn.getcwd(),  -- Root directory for file operations
@@ -278,7 +278,7 @@ require("gemini_helper").setup({
       name = "explain",
       prompt_template = "Explain this code:",
       description = "Explain selected code",
-      model = "gemini-3-pro-preview",  -- Override model for this command
+      model = "gemini-3.1-pro-preview",  -- Override model for this command
     },
     {
       name = "search",
@@ -376,20 +376,21 @@ AI response here...
 
 | Model | Description |
 |-------|-------------|
-| `gemini-3-flash-preview` | Latest fast model with 1M context (default, recommended) |
-| `gemini-3-pro-preview` | Latest flagship model with 1M context, best performance |
-| `gemini-2.5-flash-lite` | Lightweight flash model |
+| `gemini-3.1-pro-preview` | Latest flagship model with 1M context, best performance |
+| `gemini-3.1-pro-preview-customtools` | Optimized for agentic workflows with custom tools and bash |
+| `gemini-3.5-flash` | Fast model with 1M context, best cost-performance (default, recommended) |
+| `gemini-3.1-flash-lite` | Stable low-latency, cost-effective model with 1M context |
+| `gemma-4-31b-it` | Gemma 4 model with function calling and thinking |
+| `gemma-4-26b-a4b-it` | Gemma 4 MoE model with function calling and thinking |
 
 ### Free Plan Models
 
 | Model | Description |
 |-------|-------------|
-| `gemini-2.5-flash` | Free tier fast model |
-| `gemini-2.5-flash-lite` | Free tier lightweight model |
-| `gemini-3-flash-preview` | Free tier preview model |
-| `gemma-3-27b-it` | Gemma 3 27B (no function calling) |
-| `gemma-3-12b-it` | Gemma 3 12B (no function calling) |
-| `gemma-3-4b-it` | Gemma 3 4B (no function calling) |
+| `gemini-3.5-flash` | Free tier fast model |
+| `gemini-3.1-flash-lite` | Free tier stable cost-effective model |
+| `gemma-4-31b-it` | Free tier Gemma 4 model with function calling and thinking |
+| `gemma-4-26b-a4b-it` | Free tier Gemma 4 MoE model with function calling and thinking |
 
 ### CLI Models
 

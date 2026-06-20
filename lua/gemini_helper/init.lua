@@ -305,6 +305,23 @@ function M.register_commands()
   end, { desc = "Toggle Gemini chat" })
 end
 
+local function save_current_chat()
+  if not state.chat or not state.history_manager then
+    return
+  end
+
+  local messages = state.chat:get_messages()
+  if #messages == 0 then
+    return
+  end
+
+  if not state.current_chat_id then
+    state.current_chat_id = state.history_manager:create_new()
+  end
+
+  state.history_manager:save(state.current_chat_id, messages)
+end
+
 ---Open chat window
 ---@param initial_input string|nil  Optional initial text for input
 function M.open_chat(initial_input)
@@ -440,12 +457,7 @@ end
 ---Start new chat
 function M.new_chat()
   -- Save current chat if exists
-  if state.current_chat_id and state.chat then
-    local messages = state.chat:get_messages()
-    if #messages > 0 then
-      state.history_manager:save(state.current_chat_id, messages)
-    end
-  end
+  save_current_chat()
 
   state.current_chat_id = state.history_manager:create_new()
 
@@ -529,6 +541,13 @@ function M.handle_message(message, opts)
     allow_write = state.settings:get("allow_write"),
     tool_mode = tool_mode,
   })
+
+  -- Gemini file_search should be sent by itself. Combining it with function
+  -- declarations can make RAG requests hang or return no content on newer models.
+  if #rag_store_names > 0 then
+    enabled_tools = {}
+    tool_mode = "none"
+  end
 
   -- Get MCP tools if tool_mode is not "none"
   local mcp_tool_list = {}
@@ -669,11 +688,7 @@ function M.handle_message(message, opts)
           #mcp_apps > 0 and mcp_apps or nil
         )
 
-        -- Save chat
-        if state.current_chat_id then
-          local all_messages = state.chat:get_messages()
-          state.history_manager:save(state.current_chat_id, all_messages)
-        end
+        save_current_chat()
       end)
     end,
     on_error = function(err)
@@ -765,11 +780,7 @@ function M.handle_cli_message(message, opts, model)
           state.settings:set_cli_session(state.current_chat_id, provider_type, result.session_id)
         end
 
-        -- Save chat
-        if state.current_chat_id then
-          local all_messages = state.chat:get_messages()
-          state.history_manager:save(state.current_chat_id, all_messages)
-        end
+        save_current_chat()
       end)
     end,
     on_error = function(err)
@@ -786,7 +797,7 @@ function M.show_history()
   local chats = state.history_manager:list(50)
 
   if #chats == 0 then
-    vim.notify("No chat history found", vim.log.levels.INFO)
+    vim.notify("No chat history found in " .. state.settings:get("chats_folder"), vim.log.levels.INFO)
     return
   end
 
