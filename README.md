@@ -1,6 +1,6 @@
 # Gemini Helper for Neovim
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/takeshy/nvim-gemini-helper)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/takeshy/nvim-gemini-helper)
 
 Neovim plugin for Google Gemini AI with File Search RAG capabilities. Supports MCP (Model Context Protocol) servers and MCP Apps with interactive browser UI.
 

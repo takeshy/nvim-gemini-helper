@@ -3,7 +3,7 @@
 
 local M = {}
 
-M.version = "1.2.0"
+M.version = "1.3.0"
 
 -- Module imports
 local gemini = require("gemini_helper.core.gemini")
