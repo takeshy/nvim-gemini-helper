@@ -178,7 +178,7 @@ function M.parse_markdown_to_messages(content)
     if tools_str then
       msg.tools_used = {}
       for name in tools_str:gmatch("[^,]+") do
-        table.insert(msg.tools_used, name:gsub("^%s+", ""):gsub("%s+$", ""))
+        table.insert(msg.tools_used, (name:gsub("^%s+", ""):gsub("%s+$", "")))
       end
     end
 
@@ -186,7 +186,7 @@ function M.parse_markdown_to_messages(content)
     if rag_sources_str then
       msg.rag_sources = {}
       for name in rag_sources_str:gmatch("[^,]+") do
-        table.insert(msg.rag_sources, name:gsub("^%s+", ""):gsub("%s+$", ""))
+        table.insert(msg.rag_sources, (name:gsub("^%s+", ""):gsub("%s+$", "")))
       end
     end
 

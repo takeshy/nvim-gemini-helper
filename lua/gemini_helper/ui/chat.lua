@@ -970,7 +970,7 @@ function ChatUI:get_effective_settings()
   end
 
   return {
-    model = (self.pending_settings and self.pending_settings.model) or defaults.model or "gemini-3.5-flash",
+    model = (self.pending_settings and self.pending_settings.model) or defaults.model or "gemini-3.6-flash",
     search_setting = search_setting,  -- array or nil
     tool_mode = self.pending_settings and self.pending_settings.tool_mode,  -- nil = auto, or "all", "noSearch", "none"
     enabled_mcp_servers = self.pending_settings and self.pending_settings.enabled_mcp_servers,  -- nil = all enabled, [] = none, array = specific
