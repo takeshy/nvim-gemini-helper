@@ -13,10 +13,15 @@ M.API_PLANS = { "paid", "free" }
 M.DEFAULT_API_PLAN = "paid"
 
 -- Default model
-M.DEFAULT_MODEL = "gemini-3.5-flash"
+M.DEFAULT_MODEL = "gemini-3.6-flash"
 
 -- Paid tier models
 M.PAID_MODELS = {
+  {
+    name = "gemini-3.6-flash",
+    display_name = "Gemini 3.6 Flash",
+    description = "Latest stable model for fast agentic and multimodal tasks (recommended)",
+  },
   {
     name = "gemini-3.1-pro-preview",
     display_name = "Gemini 3.1 Pro Preview",
@@ -30,12 +35,12 @@ M.PAID_MODELS = {
   {
     name = "gemini-3.5-flash",
     display_name = "Gemini 3.5 Flash",
-    description = "Fast model with 1M context, best cost-performance (recommended)",
+    description = "Stable intelligent model for agentic and coding tasks",
   },
   {
-    name = "gemini-3.1-flash-lite",
-    display_name = "Gemini 3.1 Flash Lite",
-    description = "Stable low-latency, cost-effective model with 1M context",
+    name = "gemini-3.5-flash-lite",
+    display_name = "Gemini 3.5 Flash-Lite",
+    description = "Latest low-latency, cost-effective model for high-throughput tasks",
   },
   {
     name = "gemma-4-31b-it",
@@ -57,9 +62,9 @@ M.FREE_MODELS = {
     description = "Free tier fast model",
   },
   {
-    name = "gemini-3.1-flash-lite",
-    display_name = "Gemini 3.1 Flash Lite",
-    description = "Free tier stable cost-effective model",
+    name = "gemini-3.5-flash-lite",
+    display_name = "Gemini 3.5 Flash-Lite",
+    description = "Free tier latest low-latency, cost-effective model",
   },
   {
     name = "gemma-4-31b-it",

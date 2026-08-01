@@ -10,7 +10,7 @@ local json = vim.json
 M.defaults = {
   -- API settings
   google_api_key = "",
-  model = "gemini-3.5-flash",
+  model = "gemini-3.6-flash",
   api_plan = "paid",  -- "paid" or "free"
 
   -- Workspace settings
@@ -73,7 +73,9 @@ SettingsManager.__index = SettingsManager
 
 local function normalize_deprecated_model_name(model)
   if model == "gemini-3.1-flash-lite-preview" then
-    return "gemini-3.1-flash-lite"
+    return "gemini-3.5-flash-lite"
+  elseif model == "gemini-3.1-flash-lite" then
+    return "gemini-3.5-flash-lite"
   elseif model == "gemini-3-flash-preview" then
     return "gemini-3.5-flash"
   elseif model == "gemini-3-pro-preview" then
@@ -83,7 +85,7 @@ local function normalize_deprecated_model_name(model)
   elseif model == "gemini-2.5-pro" then
     return "gemini-3.1-pro-preview"
   elseif model == "gemini-2.5-flash-lite" then
-    return "gemini-3.1-flash-lite"
+    return "gemini-3.5-flash-lite"
   end
   return model
 end
