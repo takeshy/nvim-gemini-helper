@@ -12,7 +12,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. Supports M
 - **CLI Provider Support**: Use Gemini CLI, Claude CLI, or Codex CLI as alternative backends
 - **MCP Support**: Connect to MCP servers for external tools with MCP Apps browser UI support (JSON-RPC 2.0)
 - **Function Calling**: AI can directly execute workspace operations (9 tools)
-- **Multiple Model Support**: Gemini 3.6 Flash, 3.1 Pro, Gemma 4, and CLI models
+- **Multiple Model Support**: Gemini 3.8 Flash, 3.1 Pro, Gemma 4, and CLI models
 - **Web Search**: Search the web for up-to-date information using Google Search
 - **Bang Commands**: Custom command templates triggered with `!commandname`
 - **File Attachments**: Support for images and text files
@@ -41,7 +41,7 @@ Neovim plugin for Google Gemini AI with File Search RAG capabilities. Supports M
   config = function()
     require("gemini_helper").setup({
       api_key = vim.env.GOOGLE_API_KEY, -- or set via :GeminiSetApiKey
-      model = "gemini-3.6-flash", -- Default model
+      model = "gemini-3.8-flash", -- Default model
       workspace = vim.fn.getcwd(),
       allow_write = false, -- Enable to allow file modifications
       search_setting = nil, -- Default: nil, "__websearch__", store name, or array
@@ -176,7 +176,7 @@ require("gemini_helper").setup({
   -- API Settings
   api_key = "",  -- Google AI API key (required)
   api_plan = "paid",  -- "paid" or "free" (affects available models)
-  model = "gemini-3.6-flash",  -- Model to use
+  model = "gemini-3.8-flash",  -- Model to use
 
   -- Workspace
   workspace = vim.fn.getcwd(),  -- Root directory for file operations
@@ -376,7 +376,7 @@ AI response here...
 
 | Model | Description |
 |-------|-------------|
-| `gemini-3.6-flash` | Latest stable model for fast agentic and multimodal tasks (default, recommended) |
+| `gemini-3.8-flash` | Most intelligent Flash model for long-horizon engineering and agentic tasks (default, recommended) |
 | `gemini-3.1-pro-preview` | Latest flagship model with 1M context, best performance |
 | `gemini-3.1-pro-preview-customtools` | Optimized for agentic workflows with custom tools and bash |
 | `gemini-3.5-flash` | Stable intelligent model for agentic and coding tasks |

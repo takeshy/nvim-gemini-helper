@@ -13,14 +13,14 @@ M.API_PLANS = { "paid", "free" }
 M.DEFAULT_API_PLAN = "paid"
 
 -- Default model
-M.DEFAULT_MODEL = "gemini-3.6-flash"
+M.DEFAULT_MODEL = "gemini-3.8-flash"
 
 -- Paid tier models
 M.PAID_MODELS = {
   {
-    name = "gemini-3.6-flash",
-    display_name = "Gemini 3.6 Flash",
-    description = "Latest stable model for fast agentic and multimodal tasks (recommended)",
+    name = "gemini-3.8-flash",
+    display_name = "Gemini 3.8 Flash",
+    description = "Most intelligent Flash model for long-horizon engineering and agentic tasks (recommended)",
   },
   {
     name = "gemini-3.1-pro-preview",
